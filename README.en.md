@@ -1,12 +1,12 @@
 # MuseAI-Skills
 
-Muse / Hatch skill documentation and runtime snapshot.
+Skill documentation and a Muse / Hatch runtime snapshot associated with [muse.ai (Muse AI)](https://muse.ai).
 
 [简体中文](README.md) · [Technical analysis (Chinese)](PROJECT_ANALYSIS.md) · [File checksums](SHA256SUMS)
 
 **Navigate:** [Skills](#skills) · [Files](#files) · [Architecture](#architecture) · [Download](#download)
 
-This repository archives **a partial filesystem snapshot of a Muse / Hatch personal AI agent environment**. It contains product documentation, skill definitions, connector permission manifests, Linux runtime scripts, and bundled executables and dependencies for inspection and technical analysis.
+**Muse AI in this repository refers to [muse.ai](https://muse.ai)**, the website identified in the bundled [product overview](home/hatch/docs/muse.md). This repository archives a partial filesystem snapshot of that Muse / Hatch personal AI agent environment. It contains product documentation, skill definitions, connector permission manifests, Linux runtime scripts, and bundled executables and dependencies for inspection and technical analysis.
 
 **This is neither a complete source repository nor a one-command deployment package.** Most core programs are Linux x86-64 ELF binaries. Their source code, complete host configuration, root filesystem, and some runtime resources are absent. The supplied materials use the names Muse, Hatch, and Jarvis; this archive does not represent an official release or endorsement, and its provenance and product claims have not been independently verified.
 

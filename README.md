@@ -1,12 +1,12 @@
 # MuseAI-Skills
 
-Muse / Hatch 技能文档与运行环境快照。
+[muse.ai（Muse AI）](https://muse.ai) 的技能文档与 Muse / Hatch 运行环境快照。
 
 [English](README.en.md) · [中文分析报告](PROJECT_ANALYSIS.md) · [文件校验清单](SHA256SUMS)
 
 **快速导航：**[技能目录](#skills) · [文件结构与作用](#files) · [系统架构](#architecture) · [下载与校验](#download)
 
-这份仓库存档了一个 **Muse / Hatch 个人 AI Agent 环境的部分文件**，包括产品说明、技能定义、连接器权限清单、Linux 运行环境脚本，以及随包程序和依赖，供结构阅读与技术分析。
+本仓库中的 **Muse AI 指 [muse.ai](https://muse.ai)**；这一站点对应关系也见随包的[产品概览](home/hatch/docs/muse.md)。仓库存档了该 Muse / Hatch 个人 AI Agent 环境的部分文件，包括产品说明、技能定义、连接器权限清单、Linux 运行环境脚本，以及随包程序和依赖，供结构阅读与技术分析。
 
 **它不是完整源码仓库，也不是可以一键部署的安装包。** 核心程序主要以 Linux x86-64 ELF 二进制提供；构建源码、完整宿主配置、rootfs 和部分运行资源不在这份快照中。仓库附带的材料自述使用 Muse、Hatch、Jarvis 等名称；本存档不代表官方发布或认可，也未独立验证这些材料的来源与产品声明。
 
