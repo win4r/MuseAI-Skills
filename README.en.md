@@ -1,4 +1,6 @@
-# Muse / Hatch Skills & Runtime Snapshot
+# MuseAI-Skills
+
+Muse / Hatch skill documentation and runtime snapshot.
 
 [简体中文](README.md) · [Technical analysis (Chinese)](PROJECT_ANALYSIS.md) · [File checksums](SHA256SUMS)
 
@@ -171,8 +173,8 @@ These selections emphasize workflow design that is useful to examine, not proven
 To inspect all skills without downloading LFS binaries:
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/win4r/muse-file.git
-cd muse-file
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/win4r/MuseAI-Skills.git
+cd MuseAI-Skills
 ```
 
 Open `opt/hatch/skills/` or follow the links above. No bundled binary needs to be executed for this reading workflow.
@@ -455,8 +457,8 @@ Install [Git LFS](https://git-lfs.com/) first:
 
 ```bash
 git lfs install
-git clone https://github.com/win4r/muse-file.git
-cd muse-file
+git clone https://github.com/win4r/MuseAI-Skills.git
+cd MuseAI-Skills
 git lfs pull
 git lfs fsck
 ```
@@ -468,8 +470,8 @@ The original files total approximately 2.02 GB when counted by path, or 1.55 GB 
 ### Documentation-only checkout
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/win4r/muse-file.git
-cd muse-file
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/win4r/MuseAI-Skills.git
+cd MuseAI-Skills
 ```
 
 Run `git lfs pull` later if you need the binaries.

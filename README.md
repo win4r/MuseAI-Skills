@@ -1,4 +1,6 @@
-# Muse / Hatch Skills 与运行环境快照
+# MuseAI-Skills
+
+Muse / Hatch 技能文档与运行环境快照。
 
 [English](README.en.md) · [中文分析报告](PROJECT_ANALYSIS.md) · [文件校验清单](SHA256SUMS)
 
@@ -171,8 +173,8 @@
 只想研究这些技能，可以跳过全部 LFS 二进制下载：
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/win4r/muse-file.git
-cd muse-file
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/win4r/MuseAI-Skills.git
+cd MuseAI-Skills
 ```
 
 打开 `opt/hatch/skills/` 或点击上方目录即可，无需执行随包程序。
@@ -455,8 +457,8 @@ flowchart LR
 
 ```bash
 git lfs install
-git clone https://github.com/win4r/muse-file.git
-cd muse-file
+git clone https://github.com/win4r/MuseAI-Skills.git
+cd MuseAI-Skills
 git lfs pull
 git lfs fsck
 ```
@@ -468,8 +470,8 @@ git lfs fsck
 ### 只阅读文档和脚本
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/win4r/muse-file.git
-cd muse-file
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/win4r/MuseAI-Skills.git
+cd MuseAI-Skills
 ```
 
 需要二进制时再运行 `git lfs pull`。
