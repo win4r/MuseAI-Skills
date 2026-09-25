@@ -2,9 +2,13 @@
 
 [English](README.en.md) · [中文分析报告](PROJECT_ANALYSIS.md) · [文件校验清单](SHA256SUMS)
 
+**快速导航：**[技能目录](#skills) · [文件结构与作用](#files) · [系统架构](#architecture) · [下载与校验](#download)
+
 这份仓库存档了一个 **Muse / Hatch 个人 AI Agent 环境的部分文件**，包括产品说明、技能定义、连接器权限清单、Linux 运行环境脚本，以及随包程序和依赖，供结构阅读与技术分析。
 
 **它不是完整源码仓库，也不是可以一键部署的安装包。** 核心程序主要以 Linux x86-64 ELF 二进制提供；构建源码、完整宿主配置、rootfs 和部分运行资源不在这份快照中。仓库附带的材料自述使用 Muse、Hatch、Jarvis 等名称；本存档不代表官方发布或认可，也未独立验证这些材料的来源与产品声明。
+
+<a id="skills"></a>
 
 ## Skills：本仓库的重点阅读内容
 
@@ -181,29 +185,234 @@ cd muse-file
 - 想研究运行架构：阅读 [runtime-cell 启动脚本](opt/hatch/runtime-cell/launch-daemon.sh)、[daemon 控制脚本](opt/hatch/runtime-cell/control-daemon.sh) 和 [数据库关系文档](opt/hatch/skills/muse_db/references/schema.md)。
 - 想研究生成式应用：阅读 [Artifacts 说明](home/hatch/docs/artifacts.md) 与 [TypeScript Web Artifact Runtime](opt/hatch/skills/spaces/ts-runtime/README.md)，注意两者的发布能力描述存在差异。
 
-## 目录结构
+<a id="files"></a>
+
+## 文件结构与重要文件
+
+下面展开重要路径；`…` 表示省略其他程序或技能，花括号用于合并展示同级路径。全部技能入口见上方分类目录。这里的路径以已发布仓库为准，不包含本地另行解压的重复目录。
 
 ```text
 .
-├── README.md                    # 中文入口
-├── README.en.md                 # English overview
-├── PROJECT_ANALYSIS.md          # 中文技术分析报告
-├── SHA256SUMS                   # 普通文件的 SHA-256 校验值
-├── .gitattributes               # 二进制文件的 Git LFS 跟踪规则
-├── .gitignore                  # 本机元数据排除规则
+├── README.md / README.en.md
+├── PROJECT_ANALYSIS.md
+├── SHA256SUMS
+├── .gitattributes / .gitignore
 ├── home/hatch/
-│   ├── config/                  # 本地配置声明
-│   ├── docs/                    # 产品、渠道、设备与能力说明
-│   ├── assets/                  # 此快照包含的资源文档
+│   ├── config/
+│   │   ├── home.yaml
+│   │   └── skills.yaml
 │   ├── PROACTIVE_PREFERENCES.md
-│   └── workspace/               # 随快照保留的历史审查材料
+│   ├── assets/onboarding_tour/memory_import.md
+│   ├── docs/
+│   │   ├── muse.md / client-surfaces.md
+│   │   ├── goals.md / feed.md / ideas.md / self_improvement.md
+│   │   ├── scheduling-and-watching.md / connectors.md / browser.md
+│   │   ├── artifacts.md / files-and-library.md
+│   │   ├── privacy-and-credentials.md / data-handling.md
+│   │   ├── payments-and-purchases.md / calls-texts-notifications.md
+│   │   ├── voice.md / media.md / referrals.md / channel-availability.md
+│   │   ├── channels/whatsapp.md
+│   │   └── devices/
+│   │       ├── mac_app.md / tailscale.md / home_link.md
+│   │       └── home_link/integrations/
+│   │           ├── brother_printers.md
+│   │           ├── lutron_smart_bridges.md
+│   │           └── shelly_plugs.md
+│   └── workspace/muse-security-audit.md
 └── opt/
     ├── hatch/
-    │   ├── bin/                 # 核心程序与连接器 CLI
-    │   ├── runtime-cell/        # Linux 环境生命周期脚本
-    │   └── skills/              # 技能、权限 manifest、参考文档与评测场景
-    └── hatch-image/bin/         # Bun、Codex、npm、RTC 及相关资源
+    │   ├── bin/
+    │   │   ├── hatch / spawnd / hatch-execd / hatch-multicall
+    │   │   └── …
+    │   ├── runtime-cell/
+    │   │   ├── pre-start.sh / launch-daemon.sh / post-start.sh
+    │   │   ├── control-daemon.sh / control-execd.sh / run-daemon.sh
+    │   │   ├── ensure-rootfs.sh / resolve-rootfs-path.sh
+    │   │   ├── runtime-cell-entry.sh / require-modules.sh
+    │   │   ├── guest.env / guest-runtime-env.sh
+    │   │   ├── build-cell-trust-store.sh / hatch-preflight-opportunistic
+    │   │   ├── skill-scopes.conf / bin-scopes.conf
+    │   │   ├── stop.sh / post-stop.sh / is-loopback-rv.sh
+    │   │   └── etc/{hosts,resolv.conf,wgetrc}
+    │   └── skills/
+    │       ├── gmail/{SKILL.md,manifest.yaml,eval/scenarios.yaml}
+    │       ├── goals/{SKILL.md,creation/,guides/}
+    │       ├── artifacts/{document,markdown,pdf,presentation,spreadsheet,testing}/
+    │       ├── artifacts/references/
+    │       ├── muse_db/{SKILL.md,references/schema.md}
+    │       ├── magic-moment/{SKILL.md,INSTALL.md,guide/,reference/}
+    │       ├── spaces/templates/{space-static,space-ts}/workspace_agents.md
+    │       ├── spaces/ts-runtime/{README.md,docs/vertical-tool-schemas.md}
+    │       └── …
+    └── hatch-image/bin/
+        ├── runtime-cell.kdl / hatch-manifest
+        ├── convert-cell-intent / hatch-prewarm
+        ├── bun / codex / codex-resources/bwrap
+        ├── npm -> npm-package/bin/npm-cli.js
+        ├── npx -> npm-package/bin/npx-cli.js
+        ├── npm-package/{package.json,LICENSE,bin/,lib/,docs/,man/,node_modules/}
+        ├── rtc-sidecar / rtc-sidecar-lib/
+        └── disabled-user-mgmt / percona-telemetry-disabled / gws
 ```
+
+### 先分清路径含义
+
+仓库根目录是存档根目录，不是正在运行的操作系统根目录。`home/hatch/` 对应原 Agent 的 home；`opt/hatch/` 是其程序包；`opt/hatch-image/` 是镜像侧工具。原文中的 `~` 通常指 `/home/hatch`，不是你当前电脑的用户目录。绝对路径 `/run`、`/var/lib`、`/etc` 描述的是运行时依赖，本仓库大多没有这些内容。尤其要注意：`opt/hatch/runtime-cell/etc/` 只有三个配置模板，不等于完整的 `/etc`。
+
+### 仓库根文件
+
+| 文件或目录 | 作用与阅读要点 |
+|---|---|
+| [README.md](README.md) / [README.en.md](README.en.md) | 双语入口、技能目录、文件导航、下载与边界说明。 |
+| [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md) | 本次静态分析报告：架构判断、缺项、风险、检查范围与证据索引。 |
+| [SHA256SUMS](SHA256SUMS) | 已发布普通文件的内容校验清单；不覆盖自身和符号链接，也不是来源签名。 |
+| [.gitattributes](.gitattributes) | 保留原始字节，不做文本换行转换；将 ELF 程序和共享库交给 LFS。 |
+| [.gitignore](.gitignore) | 排除 macOS 元数据；没有忽略随包 npm 依赖。 |
+
+### Agent 配置与用户工作区
+
+| 文件或目录 | 作用与阅读要点 |
+|---|---|
+| [home/hatch/config/home.yaml](home/hatch/config/home.yaml) | 根 Agent 与子 Agent 的推理 effort 配置，以及渠道 provider 容器；当前 providers 为空，不代表实际部署能力全貌。 |
+| [home/hatch/config/skills.yaml](home/hatch/config/skills.yaml) | 31 个技能 available 状态声明；不是 OAuth 凭据、账户连接状态或权限授予记录。 |
+| [home/hatch/PROACTIVE_PREFERENCES.md](home/hatch/PROACTIVE_PREFERENCES.md) | 主动联系的主题、禁忌、时间和格式偏好模板；当前主题栏为空。 |
+| [home/hatch/assets/onboarding_tour/memory_import.md](home/hatch/assets/onboarding_tour/memory_import.md) | 从其他 AI 迁移上下文的提示词及用户审阅流程；不包含实际导入记忆。 |
+| [home/hatch/workspace/muse-security-audit.md](home/hatch/workspace/muse-security-audit.md) | 保留的历史审查报告；其记录涉及原环境，不证明那些路径都包含在本仓库中。 |
+
+### 产品与设备说明文档
+
+以下 26 份文档说明这份快照中的产品契约。账号特定的能力和历史可用性描述，不应当作已核实的当前产品事实。
+
+| 文件或目录 | 作用与阅读要点 |
+|---|---|
+| [muse.md](home/hatch/docs/muse.md) | 产品概览及各专题入口。 |
+| [client-surfaces.md](home/hatch/docs/client-surfaces.md) | Web、移动端和 Mac 的界面与能力差异说明。 |
+| [goals.md](home/hatch/docs/goals.md) | 目标、子目标、进展、briefing 与后台工作的边界。 |
+| [feed.md](home/hatch/docs/feed.md) | Feed 内容与生成机制、用户 brief 的作用。 |
+| [ideas.md](home/hatch/docs/ideas.md) | Idea 建议卡片、执行和移除等产品操作。 |
+| [self_improvement.md](home/hatch/docs/self_improvement.md) | 后台记忆、关系、研究、回顾、技能维护及证据追踪。 |
+| [scheduling-and-watching.md](home/hatch/docs/scheduling-and-watching.md) | 轮询式监测、调度限制、运行历史和通知交付。 |
+| [artifacts.md](home/hatch/docs/artifacts.md) | 文档、静态页和交互应用的保存、分享与删除契约。 |
+| [files-and-library.md](home/hatch/docs/files-and-library.md) | 工作区文件与 Library 的关系、下载与文件展示。 |
+| [connectors.md](home/hatch/docs/connectors.md) | 连接状态、能力范围、方法权限、OAuth 与失败处理。 |
+| [browser.md](home/hatch/docs/browser.md) | 服务端浏览器、登录会话、交互任务与下载限制。 |
+| [privacy-and-credentials.md](home/hatch/docs/privacy-and-credentials.md) | 凭据引用、Vault、授权、数据导出与删除规则。 |
+| [data-handling.md](home/hatch/docs/data-handling.md) | 数据来源、用途、用户控制及政策引用；是材料内的说明。 |
+| [payments-and-purchases.md](home/hatch/docs/payments-and-purchases.md) | 商品比较、结算、交易条款确认与钱包付款流程。 |
+| [calls-texts-notifications.md](home/hatch/docs/calls-texts-notifications.md) | 电话、短信、消息和通知各自的入口与限制。 |
+| [voice.md](home/hatch/docs/voice.md) | 此快照账号的语音能力说明，不能泛化到全部账号。 |
+| [media.md](home/hatch/docs/media.md) | 图片、视频生成及编辑的产品能力说明。 |
+| [referrals.md](home/hatch/docs/referrals.md) | 邀请、邀请码与兑换流程。 |
+| [channel-availability.md](home/hatch/docs/channel-availability.md) | 消息渠道可用性与路由判定。 |
+| [channels/whatsapp.md](home/hatch/docs/channels/whatsapp.md) | WhatsApp 渠道连接与媒体说明；不是 WhatsApp 连接器实现。 |
+| [devices/mac_app.md](home/hatch/docs/devices/mac_app.md) | 配对 Mac 的能力选择及远端 Agent/本机边界。 |
+| [devices/tailscale.md](home/hatch/docs/devices/tailscale.md) | 私有网络连接及访问说明。 |
+| [devices/home_link.md](home/hatch/docs/devices/home_link.md) | Home Link 家庭网络桥接与设备发现说明。 |
+| [devices/home_link/integrations/brother_printers.md](home/hatch/docs/devices/home_link/integrations/brother_printers.md) | Brother 打印机的 IPP 能力发现与打印路径。 |
+| [devices/home_link/integrations/lutron_smart_bridges.md](home/hatch/docs/devices/home_link/integrations/lutron_smart_bridges.md) | Lutron 灯光/窗帘桥接的 HAP 发现与配对说明。 |
+| [devices/home_link/integrations/shelly_plugs.md](home/hatch/docs/devices/home_link/integrations/shelly_plugs.md) | Shelly 插座识别、开关与功率数据说明。 |
+
+### 技能包与配套文件
+
+| 文件或目录 | 作用与阅读要点 |
+|---|---|
+| [SKILL.md（以 Gmail 为例 / Gmail example）](opt/hatch/skills/gmail/SKILL.md) | 技能入口：frontmatter 描述触发条件，正文描述操作流程和边界。 |
+| [manifest.yaml（Gmail）](opt/hatch/skills/gmail/manifest.yaml) | 机器可读的连接器元数据、权限默认值、scope 要求与命令映射；方法级设置可覆盖分组默认值。 |
+| [eval/scenarios.yaml（Gmail）](opt/hatch/skills/gmail/eval/scenarios.yaml) | 行为评测场景、用户目标及期望行为；存在场景不代表已经运行通过。 |
+| [opt/hatch/skills/flightaware/eval/findings.md](opt/hatch/skills/flightaware/eval/findings.md) | 历史评测发现与基础设施阻塞记录，应结合版本和测试环境解读。 |
+| [opt/hatch/skills/skill-creator/references/authoring_guide.md](opt/hatch/skills/skill-creator/references/authoring_guide.md) | 命名、文件拆分、模板与检查项；适合研究技能编写方法。 |
+| [opt/hatch/skills/goals/creation](opt/hatch/skills/goals/creation) / [opt/hatch/skills/goals/guides](opt/hatch/skills/goals/guides) | 前者是按领域的首次目标创建指南；后者是既有目标的持续支持 scaffold。 |
+| [opt/hatch/skills/muse_db/references/schema.md](opt/hatch/skills/muse_db/references/schema.md) | 受限 SQL 规则、标识符索引及 17 个 schema 下的 195 个关系说明；不是数据库或迁移源码。 |
+| [opt/hatch/skills/forget/references/artifact-inventory.md](opt/hatch/skills/forget/references/artifact-inventory.md) | 遗忘操作规划时的跨系统数据位置清单与检查依据。 |
+| [opt/hatch/skills/artifacts/references](opt/hatch/skills/artifacts/references) / [opt/hatch/skills/artifacts/testing/SKILL.md](opt/hatch/skills/artifacts/testing/SKILL.md) | 共享写作/图表/地图等规范，以及跨产物验收规则；引用的工具脚本并未齐备。 |
+| [opt/hatch/skills/magic-moment/guide](opt/hatch/skills/magic-moment/guide) / [opt/hatch/skills/magic-moment/reference](opt/hatch/skills/magic-moment/reference) | 口播素材、事实与叙事、视觉、剧本、时间线和渲染前评审流程，以及设计规范。 |
+| [opt/hatch/skills/magic-moment/reference/design-system/muse-moments-kit.html](opt/hatch/skills/magic-moment/reference/design-system/muse-moments-kit.html) / [opt/hatch/skills/magic-moment/reference/design-system/story-compositions.html](opt/hatch/skills/magic-moment/reference/design-system/story-compositions.html) | 可阅读的 HTML 组件和构图参考；不是完整产品前端，部分依赖资源可能缺失。 |
+| [opt/hatch/skills/spaces/templates/space-static/workspace_agents.md](opt/hatch/skills/spaces/templates/space-static/workspace_agents.md) / [opt/hatch/skills/spaces/templates/space-ts/workspace_agents.md](opt/hatch/skills/spaces/templates/space-ts/workspace_agents.md) | 静态与 TypeScript 应用工作区的 Agent 指令模板；不是已生成的应用源码。 |
+| [opt/hatch/skills/spaces/ts-runtime/README.md](opt/hatch/skills/spaces/ts-runtime/README.md) / [opt/hatch/skills/spaces/ts-runtime/docs/vertical-tool-schemas.md](opt/hatch/skills/spaces/ts-runtime/docs/vertical-tool-schemas.md) | 应用运行时与领域工具的数据契约说明；描述的 SDK 和构建文件缺失。 |
+| [opt/hatch/skills/generate_podcast/references/save-to-spotify.md](opt/hatch/skills/generate_podcast/references/save-to-spotify.md) / [opt/hatch/skills/generate_podcast/save-to-spotify/manifest.yaml](opt/hatch/skills/generate_podcast/save-to-spotify/manifest.yaml) / [opt/hatch/skills/generate_podcast/save-to-spotify/vendor/save-to-spotify/README.md](opt/hatch/skills/generate_podcast/save-to-spotify/vendor/save-to-spotify/README.md) | 播客保存到 Spotify 的流程、权限和上游发布固定版本说明；vendor 说明不等于包含完整上游源码。 |
+
+### 运行环境生命周期与配置
+
+这些是实现脚本和配置，不是可以照抄执行的启动教程。下表依据注释和可见调用说明职责；完整宿主 unit 与 nspawn 配置缺失。
+
+| 文件或目录 | 作用与阅读要点 |
+|---|---|
+| [pre-start.sh](opt/hatch/runtime-cell/pre-start.sh) | 启动前清理旧状态，准备挂载、出口 gate 和生命周期记录。 |
+| [ensure-rootfs.sh](opt/hatch/runtime-cell/ensure-rootfs.sh) | 准备/校正镜像本地 rootfs、路径与所有权，生成客体环境和系统配置；部分文件操作委托 spawnd。 |
+| [resolve-rootfs-path.sh](opt/hatch/runtime-cell/resolve-rootfs-path.sh) | 当前实现固定返回 /var/lib/hatch-runtime/rootfs；不是仓库内 rootfs。 |
+| [require-modules.sh](opt/hatch/runtime-cell/require-modules.sh) | 预加载需要的内核模块，禁用列出的不需要模块并写就绪标记。 |
+| [launch-daemon.sh](opt/hatch/runtime-cell/launch-daemon.sh) | 实际启动 systemd-nspawn 容器并组装按渠道可见的技能/二进制 overlay；名称中的 daemon 不应被误读为只启动主程序。 |
+| [post-start.sh](opt/hatch/runtime-cell/post-start.sh) | 配置 veth 地址、网络过滤并发布运行环境就绪状态。 |
+| [runtime-cell-entry.sh](opt/hatch/runtime-cell/runtime-cell-entry.sh) | 供宿主控制脚本加载的公共函数：解析 leader PID、等待 ready、装载环境。 |
+| [control-daemon.sh](opt/hatch/runtime-cell/control-daemon.sh) | 宿主侧读取可信环境、等待 cell 就绪、传递生命周期元数据，再调用 hatch daemon。 |
+| [control-execd.sh](opt/hatch/runtime-cell/control-execd.sh) | 保留 systemd socket activation 信息，调用 hatch-execd 并指定 cell leader。 |
+| [run-daemon.sh](opt/hatch/runtime-cell/run-daemon.sh) | 随包保留的客体入口：装载客体环境、移除 PTRACE capability 后执行 daemon；不能据其存在认定它是当前控制脚本的调用路径。 |
+| [guest.env](opt/hatch/runtime-cell/guest.env) | 纯 KEY=VALUE 环境文件，列出 HOME/PATH、代理、socket、CA 等配置；与 Shell 脚本区分。 |
+| [guest-runtime-env.sh](opt/hatch/runtime-cell/guest-runtime-env.sh) | 可 source 的 Shell 环境导出脚本；包含读取 env/override 等逻辑。 |
+| [build-cell-trust-store.sh](opt/hatch/runtime-cell/build-cell-trust-store.sh) | 宿主生成供 cell 只读挂载的信任锚和 NSS 数据库。 |
+| [hatch-preflight-opportunistic](opt/hatch/runtime-cell/hatch-preflight-opportunistic) | 无扩展名的 Shell 脚本：就绪后进行软件包 reconcile，失败记录日志而不阻塞启动。 |
+| [skill-scopes.conf](opt/hatch/runtime-cell/skill-scopes.conf) | 按部署渠道定义额外技能目录的可见性，注释标明由上游清单生成。 |
+| [bin-scopes.conf](opt/hatch/runtime-cell/bin-scopes.conf) | 独立定义额外 CLI 的渠道可见性；可见性 gating 不等于执行授权。 |
+| [stop.sh](opt/hatch/runtime-cell/stop.sh) | 排空/停止流程、有限等待、容器关闭及数据库状态相关处理。 |
+| [post-stop.sh](opt/hatch/runtime-cell/post-stop.sh) | 清理 ready 标记、home 挂载传播锚点与残留 veth。 |
+| [is-loopback-rv.sh](opt/hatch/runtime-cell/is-loopback-rv.sh) | 判断 /hatch 挂载是否为 loopback 替代卷并返回状态码；部分调用者注释与当前 resolver 实现存在差异。 |
+| [etc/hosts](opt/hatch/runtime-cell/etc/hosts) | cell 的静态主机名与代理地址映射。 |
+| [etc/resolv.conf](opt/hatch/runtime-cell/etc/resolv.conf) | cell 的 DNS 网关地址配置。 |
+| [etc/wgetrc](opt/hatch/runtime-cell/etc/wgetrc) | Wget 使用的 CA bundle 路径。 |
+
+按职责理解启动关系：
+
+```mermaid
+flowchart LR
+  A[pre-start / rootfs preparation] --> B[launch-daemon / systemd-nspawn]
+  B --> C[post-start / network readiness]
+  C --> D[control-daemon]
+  C --> E[control-execd]
+  D --> F[hatch daemon]
+  E --> G[hatch-execd]
+  C -.-> H[opportunistic package reconcile]
+```
+
+这是职责关系图，不是已验证的 systemd 依赖图。`runtime-cell-entry.sh` 提供共享的就绪/环境处理，`guest.env` 提供配置。就绪后的 reconcile 可以与 daemon 并行，因此 ready 不等于所有软件包更新都已结束。
+
+### 核心二进制与 CLI 分组
+
+`opt/hatch/bin/` 有 77 个程序路径。下表列出关键入口与分组，明确区分有脚本调用依据的职责和仅按名称进行的归类；没有为撰写说明执行这些二进制。
+
+| 文件或目录 | 作用与阅读要点 |
+|---|---|
+| [hatch](opt/hatch/bin/hatch) | 主 Agent daemon；control-daemon.sh 可见实际调用。 |
+| [spawnd](opt/hatch/bin/spawnd) | 运行环境管理辅助程序；脚本可见文件操作、挂载、网络 gate 和生命周期事件调用，不仅是生成子进程。 |
+| [hatch-execd](opt/hatch/bin/hatch-execd) | 命令执行服务，宿主控制入口和 socket activation 的说明可见。 |
+| [hatch-multicall](opt/hatch/bin/hatch-multicall) · [muse-mail](opt/hatch/bin/muse-mail) · [authdc](opt/hatch/bin/authdc) | 共享程序镜像的多个调用名称；原快照有 17 个硬链接路径，Git checkout 不保留该 inode 关系。 |
+| [hatch_gws_cli](opt/hatch/bin/hatch_gws_cli) · [hatch_gws_auth](opt/hatch/bin/hatch_gws_auth) · [hatch_messenger_cli](opt/hatch/bin/hatch_messenger_cli) | Google Workspace 与 Messenger 相关程序；CLI 文件名不一定与技能目录同名，使用方法以技能文档为准。 |
+| [browser-broker](opt/hatch/bin/browser-broker) · [browser-service](opt/hatch/bin/browser-service) · [hatch-browser-lease-helper](opt/hatch/bin/hatch-browser-lease-helper) · [ingress-rev-proxy](opt/hatch/bin/ingress-rev-proxy) | 浏览器协调、服务、租约及入口代理相关组件；此处仅按名称归类，内部协议与运行行为未验证。 |
+| [hatch-doctor](opt/hatch/bin/hatch-doctor) · [hatch-healthd](opt/hatch/bin/hatch-healthd) · [hatch-rescue](opt/hatch/bin/hatch-rescue) · [hatch-rescuectl](opt/hatch/bin/hatch-rescuectl) · [hatch-rescue-systemctl](opt/hatch/bin/hatch-rescue-systemctl) | 诊断、健康检查和恢复相关命名的程序；源码与独立操作手册未提供，不应据名称推断完整参数。 |
+| [hatch-vault](opt/hatch/bin/hatch-vault) · [hatch-connector-output](opt/hatch/bin/hatch-connector-output) · [hatch-ws-client](opt/hatch/bin/hatch-ws-client) | 凭据、连接器输出与 WebSocket 客户端相关命名组件；仅列出文件，未验证内部实现。 |
+| [duffel](opt/hatch/bin/duffel) · [plaid](opt/hatch/bin/plaid) · [spotify-api](opt/hatch/bin/spotify-api) · [device-data](opt/hatch/bin/device-data) · [wearables-display](opt/hatch/bin/wearables-display) | 连接器与设备 CLI 示例；结合对应 SKILL.md、manifest 和账户授权理解用途。 |
+
+### 镜像侧工具与第三方依赖
+
+| 文件或目录 | 作用与阅读要点 |
+|---|---|
+| [runtime-cell.kdl](opt/hatch-image/bin/runtime-cell.kdl) | 运行环境的软件包与配置文件声明，包含 systemd unit 内容与版本 pin；不是完整 rootfs 或构建工程。 |
+| [hatch-manifest](opt/hatch-image/bin/hatch-manifest) | 被 reconcile 脚本调用以应用运行环境清单的二进制。 |
+| [convert-cell-intent](opt/hatch-image/bin/convert-cell-intent) | 无扩展名的 Python 脚本：把旧 rootfs 的包安装记录转为 OS-intent ledger，并支持生成 base manifest。 |
+| [hatch-prewarm](opt/hatch-image/bin/hatch-prewarm) | 无扩展名的 Bash 脚本：按预算预热指定程序/依赖的页缓存。 |
+| [bun](opt/hatch-image/bin/bun) | 随包 JavaScript/TypeScript 运行工具的 Linux 二进制；不是技能源码。 |
+| [codex](opt/hatch-image/bin/codex) | 随包、名为 codex 的 Linux 二进制；仅有该文件不能确定完整版本、来源或线上主模型。 |
+| [codex-resources/bwrap](opt/hatch-image/bin/codex-resources/bwrap) | 随包 bwrap 隔离辅助程序；真实调用策略未验证。 |
+| [npm-package](opt/hatch-image/bin/npm-package) | npm 10.9.4 的工具包目录，包含 lib、bin、docs、man、node_modules 与许可证；这是第三方工具代码，不是 Muse 核心源码。 |
+| [npm](opt/hatch-image/bin/npm) | 指向 npm-package/bin/npm-cli.js 的符号链接；npx 同理指向 npx-cli.js。 |
+| [rtc-sidecar](opt/hatch-image/bin/rtc-sidecar) | 实时通信相关命名的 sidecar 二进制；未验证媒体调用链。 |
+| [rtc-sidecar-lib](opt/hatch-image/bin/rtc-sidecar-lib) | 随 RTC sidecar 提供的 .so 共享库集合。 |
+| [disabled-user-mgmt](opt/hatch-image/bin/disabled-user-mgmt) | 用于不可变镜像的账户管理拒绝脚本，提示用户/组应在构建时配置。 |
+| [percona-telemetry-disabled](opt/hatch-image/bin/percona-telemetry-disabled) | 直接成功退出的占位脚本，注释说明用于替代 Percona telemetry 入口；不能据此推断整个系统不含遥测。 |
+| [gws](opt/hatch-image/bin/gws) | 当前零字节文件；不能作为可工作的 Google CLI 使用。 |
+
+### 怎样把文件串起来读：一个例子
+
+以 Gmail 为例：先读 [SKILL.md](opt/hatch/skills/gmail/SKILL.md) 理解操作流程，再读 [manifest](opt/hatch/skills/gmail/manifest.yaml) 理解方法权限和 scopes，随后看 [eval 场景](opt/hatch/skills/gmail/eval/scenarios.yaml) 理解期望行为，最后对照通用的[连接器契约](home/hatch/docs/connectors.md)。单看编译后的 CLI 无法解释这套策略。同样，`config/skills.yaml` 声明 available 不等于账户已连接，`skill-scopes.conf` 控制可见性也不等于授予操作权限。
 
 初始材料盘点（排除 `.DS_Store`，不含新增仓库文档与校验清单）：
 
@@ -219,6 +428,8 @@ cd muse-file
 
 精确的发布文件集合以 Git 树和 `SHA256SUMS` 为准。数据库数字是文档统计，不是实际数据库查询结果。
 
+<a id="architecture"></a>
+
 ## 系统设计概要
 
 材料呈现的工作流是：用户提出任务，Agent 读取个人上下文，结合目标与记忆调用工具，将结果交付为消息、文档或应用，再由后台流程维护记忆、关系和建议。
@@ -233,6 +444,8 @@ cd muse-file
 | 生成应用 | Artifacts、Spaces、TypeScript SDK 和数据库迁移的说明文档 |
 
 这些文件可以说明设计意图和部分实现形态，不能证明相应功能在线可用、账户已连接、权限已授予或测试已经通过。
+
+<a id="download"></a>
 
 ## 下载与完整性校验
 

@@ -2,9 +2,13 @@
 
 [简体中文](README.md) · [Technical analysis (Chinese)](PROJECT_ANALYSIS.md) · [File checksums](SHA256SUMS)
 
+**Navigate:** [Skills](#skills) · [Files](#files) · [Architecture](#architecture) · [Download](#download)
+
 This repository archives **a partial filesystem snapshot of a Muse / Hatch personal AI agent environment**. It contains product documentation, skill definitions, connector permission manifests, Linux runtime scripts, and bundled executables and dependencies for inspection and technical analysis.
 
 **This is neither a complete source repository nor a one-command deployment package.** Most core programs are Linux x86-64 ELF binaries. Their source code, complete host configuration, root filesystem, and some runtime resources are absent. The supplied materials use the names Muse, Hatch, and Jarvis; this archive does not represent an official release or endorsement, and its provenance and product claims have not been independently verified.
+
+<a id="skills"></a>
 
 ## Skills: the main reading collection
 
@@ -181,29 +185,234 @@ Open `opt/hatch/skills/` or follow the links above. No bundled binary needs to b
 - For runtime architecture, inspect the [runtime-cell launcher](opt/hatch/runtime-cell/launch-daemon.sh), [daemon controller](opt/hatch/runtime-cell/control-daemon.sh), and [database schema guide](opt/hatch/skills/muse_db/references/schema.md).
 - For generated applications, compare the [Artifacts guide](home/hatch/docs/artifacts.md) with the [TypeScript runtime README](opt/hatch/skills/spaces/ts-runtime/README.md). Their descriptions of publication capabilities differ.
 
-## Repository layout
+<a id="files"></a>
+
+## Repository layout and important files
+
+The tree below expands the important paths; `…` omits additional executables and skills, and braces group sibling paths. The skill catalog above lists every skill entry. All links refer to files included in the published repository, not the separate local duplicate extraction directory.
 
 ```text
 .
-├── README.md                    # Chinese overview
-├── README.en.md                 # English overview
-├── PROJECT_ANALYSIS.md          # Technical analysis in Chinese
-├── SHA256SUMS                   # SHA-256 checksums for regular files
-├── .gitattributes               # Git LFS tracking rules for binaries
-├── .gitignore                  # Local metadata exclusions
+├── README.md / README.en.md
+├── PROJECT_ANALYSIS.md
+├── SHA256SUMS
+├── .gitattributes / .gitignore
 ├── home/hatch/
-│   ├── config/                  # Local configuration declarations
-│   ├── docs/                    # Product, channel, device, and capability guides
-│   ├── assets/                  # Resource documents included in this snapshot
+│   ├── config/
+│   │   ├── home.yaml
+│   │   └── skills.yaml
 │   ├── PROACTIVE_PREFERENCES.md
-│   └── workspace/               # Historical review material
+│   ├── assets/onboarding_tour/memory_import.md
+│   ├── docs/
+│   │   ├── muse.md / client-surfaces.md
+│   │   ├── goals.md / feed.md / ideas.md / self_improvement.md
+│   │   ├── scheduling-and-watching.md / connectors.md / browser.md
+│   │   ├── artifacts.md / files-and-library.md
+│   │   ├── privacy-and-credentials.md / data-handling.md
+│   │   ├── payments-and-purchases.md / calls-texts-notifications.md
+│   │   ├── voice.md / media.md / referrals.md / channel-availability.md
+│   │   ├── channels/whatsapp.md
+│   │   └── devices/
+│   │       ├── mac_app.md / tailscale.md / home_link.md
+│   │       └── home_link/integrations/
+│   │           ├── brother_printers.md
+│   │           ├── lutron_smart_bridges.md
+│   │           └── shelly_plugs.md
+│   └── workspace/muse-security-audit.md
 └── opt/
     ├── hatch/
-    │   ├── bin/                 # Core programs and connector CLIs
-    │   ├── runtime-cell/        # Linux environment lifecycle scripts
-    │   └── skills/              # Skills, manifests, references, and eval scenarios
-    └── hatch-image/bin/         # Bun, Codex, npm, RTC, and related resources
+    │   ├── bin/
+    │   │   ├── hatch / spawnd / hatch-execd / hatch-multicall
+    │   │   └── …
+    │   ├── runtime-cell/
+    │   │   ├── pre-start.sh / launch-daemon.sh / post-start.sh
+    │   │   ├── control-daemon.sh / control-execd.sh / run-daemon.sh
+    │   │   ├── ensure-rootfs.sh / resolve-rootfs-path.sh
+    │   │   ├── runtime-cell-entry.sh / require-modules.sh
+    │   │   ├── guest.env / guest-runtime-env.sh
+    │   │   ├── build-cell-trust-store.sh / hatch-preflight-opportunistic
+    │   │   ├── skill-scopes.conf / bin-scopes.conf
+    │   │   ├── stop.sh / post-stop.sh / is-loopback-rv.sh
+    │   │   └── etc/{hosts,resolv.conf,wgetrc}
+    │   └── skills/
+    │       ├── gmail/{SKILL.md,manifest.yaml,eval/scenarios.yaml}
+    │       ├── goals/{SKILL.md,creation/,guides/}
+    │       ├── artifacts/{document,markdown,pdf,presentation,spreadsheet,testing}/
+    │       ├── artifacts/references/
+    │       ├── muse_db/{SKILL.md,references/schema.md}
+    │       ├── magic-moment/{SKILL.md,INSTALL.md,guide/,reference/}
+    │       ├── spaces/templates/{space-static,space-ts}/workspace_agents.md
+    │       ├── spaces/ts-runtime/{README.md,docs/vertical-tool-schemas.md}
+    │       └── …
+    └── hatch-image/bin/
+        ├── runtime-cell.kdl / hatch-manifest
+        ├── convert-cell-intent / hatch-prewarm
+        ├── bun / codex / codex-resources/bwrap
+        ├── npm -> npm-package/bin/npm-cli.js
+        ├── npx -> npm-package/bin/npx-cli.js
+        ├── npm-package/{package.json,LICENSE,bin/,lib/,docs/,man/,node_modules/}
+        ├── rtc-sidecar / rtc-sidecar-lib/
+        └── disabled-user-mgmt / percona-telemetry-disabled / gws
 ```
+
+### Reading paths correctly
+
+The repository root is an archive root, not the root of a running operating system. `home/hatch/` represents the original agent home; `opt/hatch/` contains its bundle; `opt/hatch-image/` contains image-side tools. In the original documents, `~` normally means `/home/hatch`, not the home directory on your current laptop. Absolute `/run`, `/var/lib`, and `/etc` paths describe runtime dependencies and are mostly absent here. In particular, `opt/hatch/runtime-cell/etc/` contains three configuration templates; it is not a complete `/etc` tree.
+
+### Repository root files
+
+| File or directory | Purpose and reading notes |
+|---|---|
+| [README.md](README.md) / [README.en.md](README.en.md) | Bilingual entry points, skill catalog, file navigation, download instructions, and limitations. |
+| [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md) | Static analysis report: architecture findings, missing components, risks, validation scope, and evidence. |
+| [SHA256SUMS](SHA256SUMS) | Content checksums for published regular files; excludes itself and symlinks and is not a provenance signature. |
+| [.gitattributes](.gitattributes) | Preserves file bytes without text line-ending conversion; routes ELF programs and shared libraries through LFS. |
+| [.gitignore](.gitignore) | Excludes macOS metadata; bundled npm dependencies are intentionally retained. |
+
+### Agent configuration and workspace
+
+| File or directory | Purpose and reading notes |
+|---|---|
+| [home/hatch/config/home.yaml](home/hatch/config/home.yaml) | Reasoning effort for root/subagents and a channel-provider configuration container; providers is empty in this snapshot, not a complete live capability inventory. |
+| [home/hatch/config/skills.yaml](home/hatch/config/skills.yaml) | Declares 31 available skill entries; it is not an OAuth credential store, connection-state query, or permission-grant record. |
+| [home/hatch/PROACTIVE_PREFERENCES.md](home/hatch/PROACTIVE_PREFERENCES.md) | Template for proactive topics, exclusions, timing, and presentation preferences; topic fields are empty here. |
+| [home/hatch/assets/onboarding_tour/memory_import.md](home/hatch/assets/onboarding_tour/memory_import.md) | Prompt and user-review workflow for importing context from another AI; not an imported memory dataset. |
+| [home/hatch/workspace/muse-security-audit.md](home/hatch/workspace/muse-security-audit.md) | Preserved historical review of the original environment; referenced paths are not necessarily included in this archive. |
+
+### Product and device documentation
+
+These 26 files document the product contract in the supplied snapshot. Account-specific statements and historical availability must not be read as verified current product behavior.
+
+| File or directory | Purpose and reading notes |
+|---|---|
+| [muse.md](home/hatch/docs/muse.md) | Product overview and topic index. |
+| [client-surfaces.md](home/hatch/docs/client-surfaces.md) | UI and capability differences across web, mobile, and Mac surfaces. |
+| [goals.md](home/hatch/docs/goals.md) | Goals, subgoals, progress, briefings, and background-work boundaries. |
+| [feed.md](home/hatch/docs/feed.md) | Feed content, generation behavior, and the user brief. |
+| [ideas.md](home/hatch/docs/ideas.md) | Idea suggestion cards, execution, and dismissal behavior. |
+| [self_improvement.md](home/hatch/docs/self_improvement.md) | Background memory, relationship, research, reflection, skill upkeep, and evidence tracing. |
+| [scheduling-and-watching.md](home/hatch/docs/scheduling-and-watching.md) | Polling-based monitoring, scheduling limits, run history, and notification delivery. |
+| [artifacts.md](home/hatch/docs/artifacts.md) | Storage, sharing, and deletion contracts for documents, pages, and interactive apps. |
+| [files-and-library.md](home/hatch/docs/files-and-library.md) | Workspace files, Library behavior, downloads, and file presentation. |
+| [connectors.md](home/hatch/docs/connectors.md) | Connection state, supported capabilities, method permissions, OAuth, and failure handling. |
+| [browser.md](home/hatch/docs/browser.md) | Server-side browser sessions, interactive tasks, sign-in, and download limitations. |
+| [privacy-and-credentials.md](home/hatch/docs/privacy-and-credentials.md) | Credential references, Vault, permissions, data export, and deletion rules. |
+| [data-handling.md](home/hatch/docs/data-handling.md) | Documented data sources, use, user controls, and policy references within the supplied materials. |
+| [payments-and-purchases.md](home/hatch/docs/payments-and-purchases.md) | Product comparison, checkout, transaction-term review, and wallet payment workflows. |
+| [calls-texts-notifications.md](home/hatch/docs/calls-texts-notifications.md) | Entry points and boundaries for calls, texts, messages, and notifications. |
+| [voice.md](home/hatch/docs/voice.md) | Voice availability described for this snapshot account, not all accounts. |
+| [media.md](home/hatch/docs/media.md) | Documented image/video generation and editing capabilities. |
+| [referrals.md](home/hatch/docs/referrals.md) | Invitations, referral codes, and redemption. |
+| [channel-availability.md](home/hatch/docs/channel-availability.md) | Channel availability and delivery routing. |
+| [channels/whatsapp.md](home/hatch/docs/channels/whatsapp.md) | WhatsApp channel setup and media guidance, not a connector implementation. |
+| [devices/mac_app.md](home/hatch/docs/devices/mac_app.md) | Capability selection for a paired Mac and remote-agent/local-device boundaries. |
+| [devices/tailscale.md](home/hatch/docs/devices/tailscale.md) | Private-network connection and access guidance. |
+| [devices/home_link.md](home/hatch/docs/devices/home_link.md) | Home Link network bridge and device-discovery guidance. |
+| [devices/home_link/integrations/brother_printers.md](home/hatch/docs/devices/home_link/integrations/brother_printers.md) | IPP discovery and printing workflow for Brother printers. |
+| [devices/home_link/integrations/lutron_smart_bridges.md](home/hatch/docs/devices/home_link/integrations/lutron_smart_bridges.md) | HAP discovery and pairing for Lutron light/shade bridges. |
+| [devices/home_link/integrations/shelly_plugs.md](home/hatch/docs/devices/home_link/integrations/shelly_plugs.md) | Shelly plug identification, switching, and power data. |
+
+### Skill packages and supporting files
+
+| File or directory | Purpose and reading notes |
+|---|---|
+| [SKILL.md（以 Gmail 为例 / Gmail example）](opt/hatch/skills/gmail/SKILL.md) | Skill entry point: frontmatter defines triggers; the body defines procedure and boundaries. |
+| [manifest.yaml（Gmail）](opt/hatch/skills/gmail/manifest.yaml) | Machine-readable connector metadata, permission defaults, scope requirements, and command mappings; method-level rules can override group defaults. |
+| [eval/scenarios.yaml（Gmail）](opt/hatch/skills/gmail/eval/scenarios.yaml) | Behavioral scenarios, user objectives, and expected behavior; definitions are not passing test results. |
+| [opt/hatch/skills/flightaware/eval/findings.md](opt/hatch/skills/flightaware/eval/findings.md) | Historical evaluation findings and infrastructure blockers; interpret with their version and environment. |
+| [opt/hatch/skills/skill-creator/references/authoring_guide.md](opt/hatch/skills/skill-creator/references/authoring_guide.md) | Naming, resource separation, templates, and review checks for skill authors. |
+| [opt/hatch/skills/goals/creation](opt/hatch/skills/goals/creation) / [opt/hatch/skills/goals/guides](opt/hatch/skills/goals/guides) | The first contains domain-specific goal intake guides; the second contains scaffolds for ongoing support. |
+| [opt/hatch/skills/muse_db/references/schema.md](opt/hatch/skills/muse_db/references/schema.md) | Restricted SQL rules, identifier index, and 195 relation descriptions across 17 schemas; not a database or migration source. |
+| [opt/hatch/skills/forget/references/artifact-inventory.md](opt/hatch/skills/forget/references/artifact-inventory.md) | Cross-system data-location inventory for planning a forgetting operation. |
+| [opt/hatch/skills/artifacts/references](opt/hatch/skills/artifacts/references) / [opt/hatch/skills/artifacts/testing/SKILL.md](opt/hatch/skills/artifacts/testing/SKILL.md) | Shared prose/chart/map guidance and cross-format validation rules; referenced helper scripts are incomplete. |
+| [opt/hatch/skills/magic-moment/guide](opt/hatch/skills/magic-moment/guide) / [opt/hatch/skills/magic-moment/reference](opt/hatch/skills/magic-moment/reference) | Source footage, factual narrative, visuals, screenplay, timeline, and pre-render review guidance plus design specifications. |
+| [opt/hatch/skills/magic-moment/reference/design-system/muse-moments-kit.html](opt/hatch/skills/magic-moment/reference/design-system/muse-moments-kit.html) / [opt/hatch/skills/magic-moment/reference/design-system/story-compositions.html](opt/hatch/skills/magic-moment/reference/design-system/story-compositions.html) | HTML component and composition references, not a full product frontend; some dependent assets may be absent. |
+| [opt/hatch/skills/spaces/templates/space-static/workspace_agents.md](opt/hatch/skills/spaces/templates/space-static/workspace_agents.md) / [opt/hatch/skills/spaces/templates/space-ts/workspace_agents.md](opt/hatch/skills/spaces/templates/space-ts/workspace_agents.md) | Agent instruction templates for static and TypeScript artifact workspaces, not generated application source. |
+| [opt/hatch/skills/spaces/ts-runtime/README.md](opt/hatch/skills/spaces/ts-runtime/README.md) / [opt/hatch/skills/spaces/ts-runtime/docs/vertical-tool-schemas.md](opt/hatch/skills/spaces/ts-runtime/docs/vertical-tool-schemas.md) | Application-runtime and vertical-tool data contracts; the described SDK and build files are missing. |
+| [opt/hatch/skills/generate_podcast/references/save-to-spotify.md](opt/hatch/skills/generate_podcast/references/save-to-spotify.md) / [opt/hatch/skills/generate_podcast/save-to-spotify/manifest.yaml](opt/hatch/skills/generate_podcast/save-to-spotify/manifest.yaml) / [opt/hatch/skills/generate_podcast/save-to-spotify/vendor/save-to-spotify/README.md](opt/hatch/skills/generate_podcast/save-to-spotify/vendor/save-to-spotify/README.md) | Save-to-Spotify workflow, permissions, and upstream release-pinning notes; the vendor README is not complete upstream source. |
+
+### Runtime lifecycle and configuration
+
+These are implementation scripts/configurations, not a copy-and-run tutorial. The comments and visible calls establish their intended responsibilities; full host units and nspawn settings are missing.
+
+| File or directory | Purpose and reading notes |
+|---|---|
+| [pre-start.sh](opt/hatch/runtime-cell/pre-start.sh) | Prepare mounts, egress gating, lifecycle records, and stale-state cleanup before startup. |
+| [ensure-rootfs.sh](opt/hatch/runtime-cell/ensure-rootfs.sh) | Prepare/reconcile the image-local rootfs, paths, ownership, guest environment, and system configuration; delegates some file operations to spawnd. |
+| [resolve-rootfs-path.sh](opt/hatch/runtime-cell/resolve-rootfs-path.sh) | Currently returns /var/lib/hatch-runtime/rootfs, an external runtime path rather than a directory in this repository. |
+| [require-modules.sh](opt/hatch/runtime-cell/require-modules.sh) | Preload required kernel modules, block listed unnecessary modules, and write readiness markers. |
+| [launch-daemon.sh](opt/hatch/runtime-cell/launch-daemon.sh) | Launch the systemd-nspawn container and assemble channel-scoped skill/binary overlays; despite its name it is not merely the agent executable launcher. |
+| [post-start.sh](opt/hatch/runtime-cell/post-start.sh) | Configure veth addressing and network filtering and publish runtime readiness. |
+| [runtime-cell-entry.sh](opt/hatch/runtime-cell/runtime-cell-entry.sh) | Shared host-controller functions for leader PID lookup, readiness waits, and environment loading. |
+| [control-daemon.sh](opt/hatch/runtime-cell/control-daemon.sh) | Host-side environment/readiness/lifecycle handling before invoking hatch daemon. |
+| [control-execd.sh](opt/hatch/runtime-cell/control-execd.sh) | Preserve systemd socket-activation state and invoke hatch-execd with the cell leader. |
+| [run-daemon.sh](opt/hatch/runtime-cell/run-daemon.sh) | Bundled guest-side entry: load guest environment, drop PTRACE capability, and exec the daemon; presence alone does not establish its use by the current controller. |
+| [guest.env](opt/hatch/runtime-cell/guest.env) | Plain KEY=VALUE configuration for HOME/PATH, proxies, sockets, and CA paths; distinct from a shell script. |
+| [guest-runtime-env.sh](opt/hatch/runtime-cell/guest-runtime-env.sh) | Sourceable shell environment-export script with env/override loading logic. |
+| [build-cell-trust-store.sh](opt/hatch/runtime-cell/build-cell-trust-store.sh) | Build host-owned trust anchors and NSS databases for read-only cell mounts. |
+| [hatch-preflight-opportunistic](opt/hatch/runtime-cell/hatch-preflight-opportunistic) | Extensionless shell script for post-readiness package reconciliation; logs failures without blocking startup. |
+| [skill-scopes.conf](opt/hatch/runtime-cell/skill-scopes.conf) | Channel-scoped visibility of additional skill directories; marked as generated from an upstream manifest. |
+| [bin-scopes.conf](opt/hatch/runtime-cell/bin-scopes.conf) | Independently scopes extra CLI visibility by channel; visibility gating is not execution authorization. |
+| [stop.sh](opt/hatch/runtime-cell/stop.sh) | Drain/stop orchestration, bounded waits, container shutdown, and database-state handling. |
+| [post-stop.sh](opt/hatch/runtime-cell/post-stop.sh) | Clean readiness markers, home-mount propagation anchors, and residual veth state. |
+| [is-loopback-rv.sh](opt/hatch/runtime-cell/is-loopback-rv.sh) | Classify whether /hatch uses a loopback substitute volume via exit codes; some caller comments differ from the current resolver implementation. |
+| [etc/hosts](opt/hatch/runtime-cell/etc/hosts) | Static cell hostname and proxy-address mappings. |
+| [etc/resolv.conf](opt/hatch/runtime-cell/etc/resolv.conf) | Cell DNS gateway configuration. |
+| [etc/wgetrc](opt/hatch/runtime-cell/etc/wgetrc) | CA bundle path selected for Wget. |
+
+The conceptual startup relationship is:
+
+```mermaid
+flowchart LR
+  A[pre-start / rootfs preparation] --> B[launch-daemon / systemd-nspawn]
+  B --> C[post-start / network readiness]
+  C --> D[control-daemon]
+  C --> E[control-execd]
+  D --> F[hatch daemon]
+  E --> G[hatch-execd]
+  C -.-> H[opportunistic package reconcile]
+```
+
+This is a responsibility map, not a verified systemd dependency graph. `runtime-cell-entry.sh` supplies shared readiness/environment helpers; `guest.env` supplies configuration. The post-ready reconcile can run alongside the daemon, so readiness does not prove every package update has finished.
+
+### Core binaries and CLI groups
+
+`opt/hatch/bin/` contains 77 executable paths. Key entries and groups follow; the table explicitly distinguishes script-backed roles from grouping based only on names. No binary was run to obtain these descriptions.
+
+| File or directory | Purpose and reading notes |
+|---|---|
+| [hatch](opt/hatch/bin/hatch) | Main agent daemon, with invocation visible in control-daemon.sh. |
+| [spawnd](opt/hatch/bin/spawnd) | Runtime management helper; scripts invoke file operations, mounts, network gates, and lifecycle events, not just process spawning. |
+| [hatch-execd](opt/hatch/bin/hatch-execd) | Execution service with documented host entry and socket-activation handling. |
+| [hatch-multicall](opt/hatch/bin/hatch-multicall) · [muse-mail](opt/hatch/bin/muse-mail) · [authdc](opt/hatch/bin/authdc) | Multiple invocation names for a shared executable image; the original snapshot has 17 hardlink paths, an inode relationship Git checkout does not preserve. |
+| [hatch_gws_cli](opt/hatch/bin/hatch_gws_cli) · [hatch_gws_auth](opt/hatch/bin/hatch_gws_auth) · [hatch_messenger_cli](opt/hatch/bin/hatch_messenger_cli) | Google Workspace/Messenger-related programs; executable names can differ from skill directories, so consult the skill for invocation. |
+| [browser-broker](opt/hatch/bin/browser-broker) · [browser-service](opt/hatch/bin/browser-service) · [hatch-browser-lease-helper](opt/hatch/bin/hatch-browser-lease-helper) · [ingress-rev-proxy](opt/hatch/bin/ingress-rev-proxy) | Browser coordination/service/lease and ingress-proxy components, grouped by name; internal protocols and runtime behavior are unverified. |
+| [hatch-doctor](opt/hatch/bin/hatch-doctor) · [hatch-healthd](opt/hatch/bin/hatch-healthd) · [hatch-rescue](opt/hatch/bin/hatch-rescue) · [hatch-rescuectl](opt/hatch/bin/hatch-rescuectl) · [hatch-rescue-systemctl](opt/hatch/bin/hatch-rescue-systemctl) | Programs named for diagnostics, health, and recovery; source and standalone operating manuals are absent, so names do not establish supported flags. |
+| [hatch-vault](opt/hatch/bin/hatch-vault) · [hatch-connector-output](opt/hatch/bin/hatch-connector-output) · [hatch-ws-client](opt/hatch/bin/hatch-ws-client) | Components named for vault access, connector output, and a WebSocket client; listed as files without validating internals. |
+| [duffel](opt/hatch/bin/duffel) · [plaid](opt/hatch/bin/plaid) · [spotify-api](opt/hatch/bin/spotify-api) · [device-data](opt/hatch/bin/device-data) · [wearables-display](opt/hatch/bin/wearables-display) | Examples of connector/device CLIs; read with their skill, manifest, and account-authorization requirements. |
+
+### Image-side tools and third-party dependencies
+
+| File or directory | Purpose and reading notes |
+|---|---|
+| [runtime-cell.kdl](opt/hatch-image/bin/runtime-cell.kdl) | Package and configuration manifest including systemd unit content and version pins; not a complete rootfs or build project. |
+| [hatch-manifest](opt/hatch-image/bin/hatch-manifest) | Binary invoked by reconciliation scripts to apply the runtime manifest. |
+| [convert-cell-intent](opt/hatch-image/bin/convert-cell-intent) | Extensionless Python script that converts old-rootfs package state into an OS-intent ledger and can emit a base manifest. |
+| [hatch-prewarm](opt/hatch-image/bin/hatch-prewarm) | Extensionless Bash script that prewarms selected program/dependency page-cache data within a budget. |
+| [bun](opt/hatch-image/bin/bun) | Bundled Linux JavaScript/TypeScript runtime binary, not skill source. |
+| [codex](opt/hatch-image/bin/codex) | Bundled Linux binary named codex; presence alone does not establish exact version, provenance, or the active model. |
+| [codex-resources/bwrap](opt/hatch-image/bin/codex-resources/bwrap) | Bundled bwrap isolation helper; actual invocation policy is unverified. |
+| [npm-package](opt/hatch-image/bin/npm-package) | npm 10.9.4 bundle with lib, bin, docs, man, node_modules, and licenses; third-party tool code rather than Muse core source. |
+| [npm](opt/hatch-image/bin/npm) | Symlink to npm-package/bin/npm-cli.js; npx similarly points to npx-cli.js. |
+| [rtc-sidecar](opt/hatch-image/bin/rtc-sidecar) | Sidecar binary named for real-time communication; its media integration is unverified. |
+| [rtc-sidecar-lib](opt/hatch-image/bin/rtc-sidecar-lib) | Shared .so libraries shipped alongside the RTC sidecar. |
+| [disabled-user-mgmt](opt/hatch-image/bin/disabled-user-mgmt) | Account-management rejection stub for the immutable image, directing provisioning to build time. |
+| [percona-telemetry-disabled](opt/hatch-image/bin/percona-telemetry-disabled) | No-op success stub described as replacing the Percona telemetry entry point; does not establish that the whole system lacks telemetry. |
+| [gws](opt/hatch-image/bin/gws) | Zero-byte file in this snapshot, not a usable Google CLI. |
+
+### Connecting the files: a reading example
+
+For Gmail, read the [skill](opt/hatch/skills/gmail/SKILL.md) for the workflow, the [manifest](opt/hatch/skills/gmail/manifest.yaml) for method permissions and scopes, and the [eval scenarios](opt/hatch/skills/gmail/eval/scenarios.yaml) for expected behavior. Then compare the shared [connector contract](home/hatch/docs/connectors.md). The compiled CLI alone cannot explain this policy. Likewise, `config/skills.yaml` declaring a skill available does not supply an account connection, while `skill-scopes.conf` controls visibility rather than granting permission.
 
 Snapshot inventory, excluding `.DS_Store` and newly added repository documents and checksums:
 
@@ -219,6 +428,8 @@ Snapshot inventory, excluding `.DS_Store` and newly added repository documents a
 
 Use the Git tree and `SHA256SUMS` for the exact published file set. Database counts describe the supplied documentation, not a live database query.
 
+<a id="architecture"></a>
+
 ## Design overview
 
 The materials describe an agent that receives user requests, consults personal context, works with goals and memory, invokes tools, delivers messages or artifacts, and maintains contextual knowledge and suggestions in background workflows.
@@ -233,6 +444,8 @@ The materials describe an agent that receives user requests, consults personal c
 | Generated applications | Artifact, Spaces, TypeScript SDK, and database migration documentation |
 
 The files provide evidence of design intent and parts of the implementation structure. They do not establish that a feature is currently operational, an account is connected, permissions are granted, or tests have passed.
+
+<a id="download"></a>
 
 ## Download and verify
 
