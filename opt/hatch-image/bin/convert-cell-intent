@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""convert-cell-intent — one-time old-serving-rootfs -> OS-intent conversion.
+
+The runtime cell boots from the image-local base; package installs live as
+recorded intent in an append-only RV ledger that is reapplied in-cell. This
+tool is the migration edge for RVs predating that cutover: their serving
+rootfs may carry user-installed packages that exist nowhere else.
+
+`convert` (on-VM; the jarvis bundle owns invocation): every INSTALLED package
+in the old rootfs absent from the base manifest becomes one appended ledger
+entry; seeds dpkg-state.txt for the in-cell recorder when no snapshot exists;
+idempotent via the done-marker; NEVER deletes anything — freezing or GC'ing
+the old rootfs is the bundle's job.
+
+`emit-base-manifest` (build time, from mkosi.finalize): the installed package
+set of the image's cell base, "name version" lines, byte-sorted and
+deterministic. One dpkg-status parser serves both modes.
+
+Exit codes: 0 on success (including the already-converted no-op); nonzero
+when the requested rootfs has no readable dpkg status.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+DONE_MARKER = "converted.done"
+LEDGER = "ledger.jsonl"
+DPKG_STATE = "dpkg-state.txt"
+DPKG_STATUS_REL = "var/lib/dpkg/status"
+
+
+def parse_dpkg_status(status_path: Path) -> list[tuple[str, str, str]]:
+    """Parse a dpkg status database into (name, version, status) tuples.
+
+    `status` is the raw three-word Status field (e.g. "install ok installed").
+    Stanzas without a Package field are skipped; a missing Version or Status
+    yields an empty string, matching what `dpkg-query -W` would print.
+    """
+    entries: list[tuple[str, str, str]] = []
+    name = version = status = ""
+
+    def flush() -> None:
+        nonlocal name, version, status
+        if name:
+            entries.append((name, version, status))
+        name = version = status = ""
+
+    with status_path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line.strip():
+                flush()
+            elif line.startswith("Package:"):
+                name = line.split(":", 1)[1].strip()
+            elif line.startswith("Version:"):
+                version = line.split(":", 1)[1].strip()
+            elif line.startswith("Status:"):
+                status = line.split(":", 1)[1].strip()
+    flush()
+    return entries
+
+
+def is_installed(status: str) -> bool:
+    """True for the dpkg state word "installed" (third Status field word)."""
+    return status.split()[-1:] == ["installed"]
+
+
+def load_status_or_die(rootfs: Path) -> list[tuple[str, str, str]]:
+    status_path = rootfs / DPKG_STATUS_REL
+    if not status_path.is_file():
+        raise SystemExit(
+            f"error: {status_path} does not exist — {rootfs} is not a "
+            "readable dpkg rootfs, nothing can be converted from it"
+        )
+    return parse_dpkg_status(status_path)
+
+
+def dpkg_state_lines(entries: list[tuple[str, str, str]]) -> str:
+    """The recorder's snapshot format: 'name version status', byte-sorted."""
+    lines = sorted(f"{name} {version} {status}" for name, version, status in entries)
+    return "".join(line + "\n" for line in lines)
+
+
+def atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def cmd_emit_base_manifest(args: argparse.Namespace) -> None:
+    entries = load_status_or_die(args.rootfs)
+    installed = sorted(
+        f"{name} {version}"
+        for name, version, status in entries
+        if is_installed(status)
+    )
+    content = "".join(line + "\n" for line in installed)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(args.output, content)
+    print(f"wrote {len(installed)} packages: {args.output}", file=sys.stderr)
+
+
+def read_base_names(base_manifest: Path) -> set[str]:
+    if not base_manifest.is_file():
+        raise SystemExit(f"error: base manifest not readable: {base_manifest}")
+    names: set[str] = set()
+    for line in base_manifest.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            names.add(line.split()[0])
+    return names
+
+
+def cmd_convert(args: argparse.Namespace) -> None:
+    out: Path = args.out
+    out.mkdir(parents=True, exist_ok=True)
+    done = out / DONE_MARKER
+    if done.exists():
+        # Idempotence: the graft unit may run on every boot; only the first
+        # run converts. Nothing is re-read, nothing is appended twice.
+        print(f"already converted ({done}); nothing to do", file=sys.stderr)
+        return
+
+    entries = load_status_or_die(args.old_rootfs)
+    base_names = read_base_names(args.base_manifest)
+    extras = sorted(
+        {name for name, _, status in entries if is_installed(status)} - base_names
+    )
+
+    ts = int(time.time())
+    entry = {"v": 1, "ts": ts, "event": "converted", "pkgs": extras}
+    # Append-only, entry before marker: a crash in between reruns the
+    # conversion and appends a duplicate entry — reapply is idempotent, a
+    # lost entry is not recoverable, so duplicates are the right failure.
+    with (out / LEDGER).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
+
+    state = out / DPKG_STATE
+    if not state.exists():
+        # Baseline for the in-cell recorder (hatch-apt-intent-record): its
+        # first post-invoke then diffs against the pre-cutover reality
+        # instead of logging a blind baseline entry.
+        atomic_write(state, dpkg_state_lines(entries))
+
+    atomic_write(done, json.dumps({"v": 1, "ts": ts, "pkgs": len(extras)}) + "\n")
+    print(
+        f"converted: {len(extras)} non-base package(s) recorded to {out / LEDGER}",
+        file=sys.stderr,
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Convert an old runtime-cell serving rootfs into OS-intent "
+        "ledger entries (and emit the build-time base package manifest).",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    convert = sub.add_parser(
+        "convert", help="record old-rootfs packages missing from the base"
+    )
+    convert.add_argument("--old-rootfs", type=Path, required=True)
+    convert.add_argument("--base-manifest", type=Path, required=True)
+    convert.add_argument("--out", type=Path, required=True)
+    convert.set_defaults(func=cmd_convert)
+
+    emit = sub.add_parser(
+        "emit-base-manifest",
+        help="write the installed package list of a rootfs (build time)",
+    )
+    emit.add_argument("--rootfs", type=Path, required=True)
+    emit.add_argument("--output", type=Path, required=True)
+    emit.set_defaults(func=cmd_emit_base_manifest)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

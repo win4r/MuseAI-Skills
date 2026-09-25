@@ -1,0 +1,270 @@
+// Runtime-cell manifest — packages and files for the persistent rootfs.
+// Applied at image build time to rootfs-base, and at boot inside nspawn
+// to reconcile the persistent rootfs against the new image.
+
+// --- Apt repos ---
+apt-repo "cloudflared" {
+  signing-key-url "https://pkg.cloudflare.com/cloudflare-main.gpg"
+  uris "https://pkg.cloudflare.com/cloudflared"
+  suites "any"
+  components "main"
+  architectures "amd64"
+}
+
+// Node.js from NodeSource (nodejs 24 LTS) instead of the Ubuntu Noble universe
+// deb (18.x, EOL upstream, no guaranteed security updates).
+//
+// nodejs is installed at BUILD from the vendored NodeSource .deb served by the
+// local package repo (mkosi.images/cell/mkosi.packages, LFS; pinned in the cell
+// mkosi.conf Packages= as nodejs=24.20.0-1nodesource1) -- exactly like the
+// ffmpeg/libheif backports, so the build needs NO egress to deb.nodesource.com.
+// The earlier design fetched the signing key + deb from NodeSource during the
+// build-time reconcile; that fails closed in CI, whose build sandbox has no
+// egress to deb.nodesource.com (HTTP 403 on the key). See T287440217.
+//
+// The NodeSource apt source is still configured for BOOT-time security updates:
+// the .sources file below + a committed, dearmored keyring shipped via the cell
+// skeleton (mkosi.skeleton/etc/apt/keyrings/nodesource.gpg). No build-time curl,
+// so no network key rotation -- refresh the committed keyring if NodeSource
+// rolls their signing key. Boot egress to deb.nodesource.com is allowlisted in
+// hatch-sentinel managed-internal-network-policies.yaml.
+file "/etc/apt/sources.list.d/nodesource.sources" {
+  owner "root:root"
+  mode "0644"
+  content "Types: deb\nURIs: https://deb.nodesource.com/node_24.x\nSuites: nodistro\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/nodesource.gpg\n"
+}
+
+// --- Packages ---
+package "build-essential"
+package "ca-certificates"
+package "ccze"
+package "cloudflared"
+package "cmake"
+package "curl"
+package "dbus"
+package "dnsutils"
+package "eatmydata"
+package "expect"
+package "fd-find"
+package "ffmpeg"
+package "file"
+package "fonts-liberation"
+package "fonts-noto"
+package "fonts-noto-cjk"
+package "fonts-noto-color-emoji"
+package "fonts-noto-extra"
+package "gh"
+package "git"
+package "gnupg"
+package "graphicsmagick"
+package "iproute2"
+package "iptables"
+package "nftables"
+package "iputils-ping"
+package "jq"
+package "less"
+package "libasound2-dev"
+package "libasound2t64"
+package "libatk-bridge2.0-0"
+// Hard NEEDED entry of the vendored Shop Wallet CLI (Node.js single-executable
+// builds link libatomic). Declared explicitly rather than relying on it
+// arriving transitively via build-essential: the CLI is the only consumer, and
+// a transitive dependency that goes away silently breaks the wallet binary at
+// exec time with a loader error, not at build time.
+package "libatomic1"
+package "libcairo2-dev"
+package "libgbm1"
+package "libgtk-3-0"
+package "libheif-examples"
+package "libheif-plugin-ffmpegdec"
+package "libheif-plugin-dav1d"
+package "libnss3"
+package "libnss3-tools"
+package "libpango1.0-dev"
+package "libssl-dev"
+package "libudev-dev"
+package "libwayland-dev"
+package "libx11-dev"
+package "libxkbcommon-dev"
+package "lsof"
+package "net-tools"
+package "nodejs"
+package "libreoffice-core-nogui"
+package "libreoffice-writer-nogui"
+package "libreoffice-calc-nogui"
+package "libreoffice-impress-nogui"
+package "openssh-client"
+package "pkg-config"
+package "poppler-utils"
+package "procps"
+package "psmisc"
+package "python3"
+package "python3-dev"
+package "python3-docx"
+package "python3-matplotlib"
+package "python3-openpyxl"
+package "python3-pip"
+package "python3-plotly"
+package "python3-seaborn"
+package "python3-venv"
+package "ripgrep"
+package "rsync"
+package "socat"
+package "sqlite3"
+package "strace"
+package "sudo"
+package "systemd"
+package "systemd-container"
+package "systemd-sysv"
+package "tar"
+package "tree"
+package "tigervnc-standalone-server"
+package "tmux"
+package "uidmap"
+package "unzip"
+package "vim-tiny"
+package "vmtouch"
+package "xauth"
+package "xvfb"
+package "xz-utils"
+package "zip"
+package "zsh"
+
+// --- Files ---
+file "/etc/systemd/system/default.target" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Hatch runtime-cell minimal boot target\nDefaultDependencies=no\nWants=hatch-execd.socket\nAllowIsolate=yes\n"
+}
+
+file "/etc/systemd/system/hatch-execd.socket" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=hatch-execd socket\nDefaultDependencies=no\n\n[Socket]\nExecStartPre=+/usr/bin/install -d -m 0755 -o root -g root /run/hatch\nExecStartPre=+/usr/bin/install -d -m 0755 -o root -g root /run/hatch/execd\nListenStream=/run/hatch/execd/execd.sock\nSocketMode=0600\nRemoveOnStop=true\nService=hatch-execd.service\n\n[Install]\nWantedBy=sockets.target\n"
+}
+
+file "/etc/systemd/system/hatch-execd.service" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=hatch-execd\nDefaultDependencies=no\nStartLimitIntervalSec=0\nAfter=hatch-execd.socket\nRequires=hatch-execd.socket\n\n[Service]\nType=simple\nUMask=0007\nExecStartPre=/bin/sh -c 'test -f /opt/hatch/runtime-cell/runtime-cell.ready'\nExecStart=/opt/hatch/runtime-cell/run-execd.sh --socket /run/hatch/execd/execd.sock\nWorkingDirectory=/home/hatch\nRestart=always\nRestartSec=1\nLimitNOFILE=65535\nSyslogIdentifier=hatch-execd\n"
+}
+
+// Pin nodejs to NodeSource so it wins deterministically over any Ubuntu
+// nodejs that a future dependency might pull in (NodeSource 24.x already
+// out-versions Noble's 18.x, but the pin makes it explicit and downgrade-
+// proof). This is a phase-30 file so it lands after the phase-20 install on
+// a cold apply; that is fine because NodeSource wins by version anyway, and
+// the pin governs every subsequent reconcile.
+file "/etc/apt/preferences.d/nodesource" {
+  owner "root:root"
+  mode "0644"
+  content "Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 700\n"
+}
+
+// Hold ffmpeg + its libav*/libsw* at the Noble-rebuilt 8.1.2 backport (the
+// .debs ship in mkosi.images/cell/mkosi.packages and are baked in at image
+// build). The backport repo is build-time only, so without this the reconcile's
+// apt-get install could pull Noble's EOL 6.1.1 back in. Clears the exploited
+// CVE-2026-8461 + top RCE-class CVEs (risk 100->19). See T287440217. The
+// versionless `package "nodejs"`-style `package "ffmpeg"` above NoOps at boot
+// because 8.1.2 is already installed.
+file "/etc/apt/preferences.d/ffmpeg-backport" {
+  owner "root:root"
+  mode "0644"
+  content "Package: ffmpeg libavcodec62 libavformat62 libavutil60 libavfilter11 libavdevice62 libswscale9 libswresample6\nPin: version 7:8.1.2*\nPin-Priority: 1001\n"
+}
+
+// Hold libheif at the Noble-rebuilt 1.23.3 backport (debs in
+// mkosi.images/cell/mkosi.packages). Clears all 16 libheif CVEs; the ffmpegdec
+// plugin is rebuilt against our libavcodec62 so the feed-HEIC decode path drops
+// Noble's vulnerable libavcodec60 (the ffmpeg-backport soname residual). See
+// T287440217. Same build-time-only-repo downgrade guard as ffmpeg above.
+// libheif-plugin-dav1d is pinned too: libheif1 1.23 hard-Depends an AV1 decoder
+// plugin (aomdec | dav1d) at the same version, so it must be held in lockstep.
+file "/etc/apt/preferences.d/libheif-backport" {
+  owner "root:root"
+  mode "0644"
+  content "Package: libheif1 libheif-examples libheif-plugin-ffmpegdec libheif-plugin-dav1d\nPin: version 1.23.3-1\nPin-Priority: 1001\n"
+}
+
+// Hold GraphicsMagick at the Noble-rebuilt 1.3.46 backport (debs in
+// mkosi.images/cell/mkosi.packages). Built --with-heif against our libheif
+// 1.23.3, so `gm` decodes HEIC/AVIF through libheif + the ffmpegdec/dav1d
+// plugins; also clears the low-severity gm CVEs in Noble's 1.3.42. The coder lib
+// libgraphicsmagick-q16-3t64 is pinned in lockstep. Requires the libheif backport
+// above (libgraphicsmagick-q16-3t64 Depends libheif1 >= 1.20). See T287440217.
+file "/etc/apt/preferences.d/graphicsmagick-backport" {
+  owner "root:root"
+  mode "0644"
+  content "Package: graphicsmagick libgraphicsmagick-q16-3t64\nPin: version 1.4+really1.3.46-2\nPin-Priority: 1001\n"
+}
+
+// --- Retired OS-owned periodic/apt side services ---
+// The cell's package state is owned by the Hatch manifest reconcile (this
+// manifest, applied in the system-maintenance cgroup leaf under managed
+// egress policy). The distro's own apt side machinery is retired in the
+// cell: its units run OUTSIDE that leaf (apt hooks systemd-start them), so
+// their egress reaches Sentinel unattributed — the apt/ESM/motd-news slice
+// of the anonymous runtime.unknown ledger rows, and fleet-wide HITL prompt
+// storms whenever they dial a host the managed system-egress allowlist does
+// not carry (the 2026-08-15 cli.github.com storm). Each unit is shadowed by
+// an inert /etc unit (the same override mechanism as default.target above,
+// so the boot-time reconcile also retires them on existing cells): no
+// [Service]/[Timer] section means nothing can run, and RefuseManualStart
+// makes an apt-hook `systemctl start` fail cleanly instead of executing.
+// Deliberate tradeoff (owner decision, 2026-08-22): no in-cell
+// unattended-upgrades between image rolls; package freshness rides the
+// reconcile plus VM replacement.
+file "/etc/systemd/system/apt-daily.timer" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell packages are reconcile-owned\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}
+
+file "/etc/systemd/system/apt-daily-upgrade.timer" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell packages are reconcile-owned\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}
+
+file "/etc/systemd/system/unattended-upgrades.service" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell packages are reconcile-owned\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}
+
+file "/etc/systemd/system/apt-news.service" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell apt news fetch is retired\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}
+
+file "/etc/systemd/system/esm-cache.service" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell ESM cache refresh is retired\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}
+
+file "/etc/systemd/system/ua-timer.timer" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell ubuntu-advantage jobs are retired\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}
+
+file "/etc/systemd/system/motd-news.timer" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell motd news fetch is retired\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}
+
+file "/etc/systemd/system/update-notifier-download.timer" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell packages are reconcile-owned\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}
+
+file "/etc/systemd/system/update-notifier-motd.timer" {
+  owner "root:root"
+  mode "0644"
+  content "[Unit]\nDescription=Retired by Hatch: cell packages are reconcile-owned\nRefuseManualStart=yes\nRefuseManualStop=yes\n"
+}

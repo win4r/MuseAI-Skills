@@ -1,0 +1,213 @@
+#!/bin/bash
+# hatch-prewarm — bounded, product-aware pre-RV page-cache prewarm. Invoked
+# by hatch-prewarm.service after hatch-init, before any RV attach.
+#
+# Warmed: the postgres server binary + its ldd closure; the hatch daemon
+# binary file-only (trust boundary below); host systemd-nspawn closure + an
+# explicit cell boot-file list (ldd resolves against the HOST root, so
+# in-cell binaries cannot be closure-resolved).
+#
+# Never warmed (structural, deny_listed()): /opt/metasql (own bounded unit;
+# whole-fat-binary vmtouch pins pages no runtime path reads), RV paths (not
+# attached yet; RV warming is the RV hot-set machinery's job), whole
+# directories of data.
+#
+# Budget degrades PER FILE: a file that would push the warmed total past
+# CAP_BYTES is skipped and counted, and the walk continues — one oversized
+# regression must not evict the small warms shipped next to it. The skip
+# count is logged and recorded in the timing marker as review-visible
+# evidence. Pages stay evictable; vmtouch -t touches, it does not lock.
+#
+# ldd EXECUTES the target's ELF interpreter, acceptable only for
+# measured-rootfs (dm-verity) binaries; resolving at boot also keeps the
+# closure in sync with the shipped binaries across package bumps. The daemon
+# binary is live-update-bundle bytes — a different trust root — so it is
+# never ldd'd. A binary ldd cannot resolve (static, foreign loader) degrades
+# to warming the binary itself.
+#
+# Every run — including nothing-to-warm and fail-open paths — writes
+# $TIMING_FILE: {"started_ms","ended_ms","bytes","files","skipped"}.
+#
+# Fail-open everywhere: the unit invokes this with the ExecStart=- prefix;
+# nothing here may block or fail boot.
+set -uo pipefail
+
+# The HATCH_PREWARM_* overrides exist for
+# scripts/tests/test_hatch_prewarm_systemd.py only; the systemd unit never
+# sets them.
+ROOT="${HATCH_PREWARM_ROOT:-}"
+VMTOUCH="${HATCH_PREWARM_VMTOUCH:-/usr/bin/vmtouch}"
+CAP_BYTES="${HATCH_PREWARM_CAP_BYTES:-268435456}"   # 256 MiB
+TIMING_FILE="${HATCH_PREWARM_TIMING_FILE:-/run/hatch-prewarm/timing.json}"
+
+# Self-deadline. The unit's TimeoutStartSec is a HARD failure mode:
+# ExecStart=- forgives any exit STATUS, but a oneshot killed at the unit
+# timeout lands the unit in `failed`, which degrades `is-system-running` —
+# and the control plane's health gate requires exactly "running", so one
+# pathological-IO boot would stall that VM's replacement. The script
+# therefore guarantees its own exit well inside the unit deadline: the
+# vmtouch page-in and each ldd closure resolve run under `timeout`, and a
+# deadline hit is an ordinary logged fail-open exit (partial warm kept),
+# never a unit failure. Worst case (one vmtouch at 10+2s kill grace, two
+# ldds at 2s each) stays comfortably under the unit's 20s.
+VMTOUCH_TIMEOUT_S="${HATCH_PREWARM_VMTOUCH_TIMEOUT_S:-10}"
+LDD_TIMEOUT_S=2
+
+log() { echo "hatch-prewarm: $*"; }
+
+# with_deadline <secs> <cmd...> — run under coreutils `timeout` when
+# available (the image always ships it; macOS test hosts may not — there the
+# fallback runs unbounded rather than failing the prewarm).
+with_deadline() {
+    local secs="$1"
+    shift
+    if command -v timeout > /dev/null 2>&1; then
+        timeout -k 2 "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
+# Millisecond wall clock. GNU date supports %N; if this build of date does
+# not (non-GNU test hosts), degrade to second precision — never fail over a
+# clock.
+now_ms() {
+    local ms
+    ms="$(date +%s%3N 2>/dev/null)"
+    case "$ms" in
+        '' | *[!0-9]*) echo "$(($(date +%s) * 1000))" ;;
+        *) echo "$ms" ;;
+    esac
+}
+
+START_MS="$(now_ms)"
+
+# write_timing <bytes> <files> <skipped> — best-effort atomic (tmp+rename)
+# marker write; every exit path calls it, and it never fails the run. Under
+# the unit, /run/hatch-prewarm exists via RuntimeDirectory= and is the only
+# path ProtectSystem=strict leaves writable.
+write_timing() {
+    local end_ms tmp
+    end_ms="$(now_ms)"
+    tmp="$TIMING_FILE.tmp"
+    mkdir -p "$(dirname "$TIMING_FILE")" 2>/dev/null || return 0
+    printf '{"started_ms":%s,"ended_ms":%s,"bytes":%s,"files":%s,"skipped":%s}\n' \
+        "$START_MS" "$end_ms" "$1" "$2" "$3" > "$tmp" 2>/dev/null || return 0
+    mv -f "$tmp" "$TIMING_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+# Deny list, matched against the ROOT-relative path of every resolved
+# candidate. Defense in depth: the candidate lists below never name these
+# trees, but the ldd closure is computed at runtime and this guard makes the
+# contract structural.
+deny_listed() {
+    case "$1" in
+        /opt/metasql/*)     return 0 ;;  # never warmed, see header
+        /hatch/*)           return 0 ;;  # RV mount root
+        /var/lib/hatch/*)   return 0 ;;  # RV data bind (var-lib-hatch.mount)
+        /home/*)            return 0 ;;  # RV home bind (home-hatch.mount)
+    esac
+    return 1
+}
+
+# Resolved, deduplicated candidate set: canonical path -> 1.
+declare -A SEEN=()
+FILES=()
+TOTAL_BYTES=0
+SKIPPED_FILES=0
+
+# add_file <path> — canonicalize, deny-filter, dedupe, size, and budget one
+# file. A file that would exceed the byte budget is skipped and counted
+# (per-file degradation, see header); the walk continues.
+add_file() {
+    local path="$1" real rel size
+    [ -e "$path" ] || return 0
+    real="$(readlink -f -- "$path" 2>/dev/null)" || return 0
+    [ -f "$real" ] || return 0
+    [ -n "${SEEN["$real"]:-}" ] && return 0
+    SEEN["$real"]=1
+    rel="${real#"$ROOT"}"
+    if deny_listed "$rel"; then
+        log "refusing deny-listed path $rel (never warmed, see script header)"
+        return 0
+    fi
+    # GNU stat on the image; the BSD fallback keeps the test suite honest on
+    # macOS dev machines (same value, different flag spelling).
+    size="$(stat -Lc %s -- "$real" 2>/dev/null || stat -Lf %z -- "$real" 2>/dev/null)" || return 0
+    [ -n "$size" ] || return 0
+    if [ $((TOTAL_BYTES + size)) -gt "$CAP_BYTES" ]; then
+        SKIPPED_FILES=$((SKIPPED_FILES + 1))
+        log "skipping $rel ($size bytes): would exceed budget $CAP_BYTES (warmed so far $TOTAL_BYTES)"
+        return 0
+    fi
+    FILES+=("$real")
+    TOTAL_BYTES=$((TOTAL_BYTES + size))
+}
+
+# add_closure <binary> — the binary plus its ldd-resolved loader/library
+# closure. Measured-rootfs binaries only (see header): ldd executes the
+# target's ELF interpreter as root.
+add_closure() {
+    local bin="$1" dep
+    [ -x "$bin" ] || { log "absent, skipping: ${bin#"$ROOT"}"; return 0; }
+    add_file "$bin"
+    # ldd output: "libX => /path (0x…)", "/lib64/ld-linux… (0x…)", or
+    # "statically linked"; keep only absolute paths. ldd failure (static
+    # binary, foreign loader) degrades to the binary alone.
+    while IFS= read -r dep; do
+        add_file "$dep"
+    done < <(with_deadline "$LDD_TIMEOUT_S" ldd "$bin" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }' || true)
+}
+
+# --- PostgreSQL server (measured rootfs): binary + loader/library closure.
+# The version glob tracks mkosi.conf's postgresql-NN package across bumps.
+for pg in "$ROOT"/usr/lib/postgresql/*/bin/postgres; do
+    add_closure "$pg"
+done
+
+# --- Hatch daemon (live-update bundle; unit is condition-gated on it).
+# File only, NEVER add_closure: live-update bytes are never ldd'd (see header).
+HATCH_BIN="$ROOT/opt/hatch/bin/hatch"
+if [ -x "$HATCH_BIN" ]; then
+    add_file "$HATCH_BIN"
+else
+    log "absent, skipping: ${HATCH_BIN#"$ROOT"}"
+fi
+
+# --- Cell boot files (identityless preboot): host nspawn closure plus the
+# cell-side init/loader/libc the cell reads before the RV graft.
+add_closure "$ROOT/usr/bin/systemd-nspawn"
+CELL="$ROOT/var/lib/hatch-runtime/rootfs-base"
+for cell_file in \
+    "$CELL"/usr/lib/systemd/systemd \
+    "$CELL"/usr/lib/systemd/libsystemd-shared-*.so \
+    "$CELL"/usr/lib/*-linux-gnu/ld-linux-*.so.* \
+    "$CELL"/usr/lib/*-linux-gnu/libc.so.6; do
+    add_file "$cell_file"
+done
+
+if [ "${#FILES[@]}" -eq 0 ]; then
+    log "no candidate files present; nothing to warm (skipped=$SKIPPED_FILES)"
+    write_timing 0 0 "$SKIPPED_FILES"
+    exit 0
+fi
+
+if [ "$SKIPPED_FILES" -gt 0 ]; then
+    log "budget $CAP_BYTES: skipped $SKIPPED_FILES oversized file(s), warming the ${#FILES[@]} that fit — a nonzero skip count is a fat-binary regression to fix in review, see header"
+fi
+
+if [ ! -x "$VMTOUCH" ]; then
+    log "vmtouch not executable at $VMTOUCH; skipping prewarm (fail open)"
+    write_timing 0 0 "$SKIPPED_FILES"
+    exit 0
+fi
+
+log "warming ${#FILES[@]} files, $TOTAL_BYTES bytes (cap $CAP_BYTES, skipped $SKIPPED_FILES)"
+with_deadline "$VMTOUCH_TIMEOUT_S" "$VMTOUCH" -q -t -F "${FILES[@]}"
+rc=$?
+if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    log "vmtouch hit the ${VMTOUCH_TIMEOUT_S}s self-deadline; partial warm kept (fail open)"
+fi
+write_timing "$TOTAL_BYTES" "${#FILES[@]}" "$SKIPPED_FILES"
+log "done rc=$rc files=${#FILES[@]} bytes=$TOTAL_BYTES skipped=$SKIPPED_FILES"
+exit "$rc"

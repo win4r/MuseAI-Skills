@@ -1,0 +1,9 @@
+llm:
+  reasoning:
+    root_agent:
+      effort: high
+    subagent:
+      effort: high
+channels:
+  providers: {}
+  schema_version: 2

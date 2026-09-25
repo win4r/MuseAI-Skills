@@ -1,0 +1,5 @@
+# Local macOS metadata only; bundled dependencies are part of this archive.
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/

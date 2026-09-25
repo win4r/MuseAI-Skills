@@ -1,0 +1,64 @@
+version: 1
+entries:
+  calendly:
+    status: available
+  facebook_cli:
+    status: available
+  function_health:
+    status: available
+  gmail:
+    status: available
+  google_calendar:
+    status: available
+  google_contacts:
+    status: available
+  google_docs:
+    status: available
+  google_drive:
+    status: available
+  google_forms:
+    status: available
+  google_sheets:
+    status: available
+  google_slides:
+    status: available
+  google_tasks:
+    status: available
+  granola:
+    status: available
+  healthex:
+    status: available
+  instagram:
+    status: available
+  instagram_messages:
+    status: available
+  messenger_read:
+    status: available
+  notion:
+    status: available
+  opentable:
+    status: available
+  outlook_calendar:
+    status: available
+  outlook_contacts:
+    status: available
+  outlook_mail:
+    status: available
+  peloton:
+    status: available
+  philips_hue:
+    status: available
+  plaid:
+    status: available
+  printify:
+    status: available
+  spotify:
+    status: available
+  tessie:
+    status: available
+  threads:
+    status: available
+  threads_messages:
+    status: available
+  withings:
+    status: available

@@ -1,0 +1,914 @@
+#!/bin/sh
+# hatch-preflight-opportunistic: opportunistic, post-boot guest package reconcile
+# for the runtime cell.
+#
+# This was lifted out of ensure-rootfs.sh's pre-start path. Reconciling packages
+# at pre-start blocked the cell (and the daemon inside it) from starting whenever
+# the manifest fingerprint changed (a slow `apt` run). Instead, this runs as its
+# own unit that starts once the cell is READY, in parallel with the daemon, so it
+# never gates startup.
+#
+# It runs `hatch-manifest maybe-apply` INSIDE the live cell (via nsenter, like
+# control-daemon.sh), so apt routes through the cell's steady-state Sentinel
+# egress — no temporary bootstrap nspawn, no "rootfs busy" (the cell owns its own
+# rootfs), and no need for the pre-boot direct-host-networking workaround.
+#
+# On the happy path (manifest unchanged) `maybe-apply` consumes only ~50-130ms;
+# when the manifest changed it installs the apt delta. Either way it no longer
+# gates startup — the daemon now starts even when packages still need to be
+# installed (they reconcile in parallel afterward). The unit always exits 0:
+# it is opportunistic by contract — nothing Requires= it and it re-runs on the
+# next cell restart (PartOf=) — and a failed oneshot would flip
+# `systemctl is-system-running` to degraded for the rest of the boot, which
+# the control plane's replace health gate (requires exactly "running") would
+# then fail forever. Failures stay loud in the journal instead.
+set -eu
+
+machine=htch-runtime
+ready_file=/run/hatch/runtime-cell/runtime-cell.ready
+
+# Wait for the cell to be ready (leader pid + ready file), mirroring
+# control-daemon.sh. After= on the unit already orders us after the cell's start
+# job, but poll defensively in case the leader is still settling.
+leader=
+for _ in $(seq 1 200); do
+    leader="$(/usr/bin/machinectl show "$machine" -p Leader --value 2>/dev/null || true)"
+    if [ -f "$ready_file" ] && [ -n "$leader" ]; then
+        break
+    fi
+    sleep 0.1
+done
+
+if [ ! -f "$ready_file" ] || [ -z "$leader" ]; then
+    # Loud but exit 0: this unit's contract is ALWAYS-exit-0 (see header) —
+    # a failed oneshot flips is-system-running to degraded for the rest of
+    # the boot, and the control plane's replace health gate (requires
+    # exactly "running") would permanently fail the candidate. A
+    # crash-looping cell is already loudly visible on its own unit.
+    echo "preflight-opportunistic: runtime cell did not become ready (skipping this pass; PartOf= re-runs on the next cell restart)" >&2
+    exit 0
+fi
+
+# Join the runtime cell's cgroup BEFORE entering its namespaces: Sentinel's
+# egress attribution is an eBPF connect() hook attached at the cell cgroup
+# root (hatch_networking::runtime_cell::RUNTIME_CELL_CGROUP_PATH), so a
+# process inside the cell's netns but OUTSIDE its cgroup is unattributable
+# and the egress proxy 407-challenges it — exactly how the manifest apt run
+# and the os-intent replay have been failing. Joining makes this reconcile
+# an ordinary, attributed cell egress peer under normal Sentinel policy: no
+# credentials to smuggle, no unattributed allowlists. Same move the daemon's
+# namespace supervisor makes for the same reason; Delegate=yes on the unit
+# tells systemd to expect this process leaving the unit cgroup. Fail-open
+# with a loud line: an unjoined run degrades back to the 407 (visible
+# below), never a blocked unit.
+cell_cgroup="$(awk -F: '$1=="0" {print $3}' "/proc/$leader/cgroup" 2>/dev/null || true)"
+if [ -n "$cell_cgroup" ] && [ -w "/sys/fs/cgroup$cell_cgroup/cgroup.procs" ]; then
+    # Descend into a dedicated system-maintenance leaf under the cell cgroup
+    # (created host-side each run; existing dir is fine). Sentinel classifies
+    # egress from this leaf as policy_subject runtime.system_maintenance:
+    # attributed and policied like any cell peer, but background — an
+    # unmatched destination is DENIED outright instead of raising a user
+    # HITL card (system maintenance must never prompt a human). The leaf
+    # grants nothing an ordinary cell process lacks: in-cell root entering
+    # it only trades prompts for denies. Fall back to the plain cell cgroup
+    # if the leaf cannot be created — traffic stays attributed, and an
+    # unlisted apt source then surfaces as a prompt rather than a silent
+    # deny (still fail-open for the reconcile itself).
+    # The leader (container PID 1) sits in .../payload/init.scope — the guest
+    # systemd's own scope inside the delegated subtree. Sentinel's classifier
+    # anchors at .../payload/system-maintenance, so derive the payload ROOT
+    # from the leader's cgroup before appending the leaf; a leaf under
+    # init.scope would never classify. Skip the leaf (honest fallback log)
+    # when no payload segment is present.
+    case "$cell_cgroup" in
+        */payload) payload_cgroup="$cell_cgroup" ;;
+        */payload/*) payload_cgroup="${cell_cgroup%%/payload/*}/payload" ;;
+        *) payload_cgroup="" ;;
+    esac
+    maint_cgroup="$payload_cgroup/system-maintenance"
+    if [ -n "$payload_cgroup" ]; then
+        mkdir -p "/sys/fs/cgroup$maint_cgroup" 2>/dev/null || true
+        # NO cgroup memory bound here, deliberately — it is IMPOSSIBLE on
+        # this topology (validated live on an overlay-root VM): the
+        # controller chain carries memory down TO
+        # com.hatch.runtime-cell.service, but that cgroup holds one direct
+        # member process (systemd-nspawn itself), and the kernel
+        # no-internal-process rule forbids enabling any controller in
+        # subtree_control while direct members exist — so no descendant of
+        # the service (payload, this maintenance leaf) can ever receive the
+        # memory controller. Should the nspawn layout ever move its process
+        # into a supervisor child cgroup, a leaf memory.max becomes possible
+        # again; until then the memory containment for the apt work is the
+        # per-process RLIMIT_AS set inside each in-cell payload below.
+        :
+    fi
+    if [ -n "$payload_cgroup" ] && [ -w "/sys/fs/cgroup$maint_cgroup/cgroup.procs" ] \
+        && echo $$ > "/sys/fs/cgroup$maint_cgroup/cgroup.procs" 2>/dev/null; then
+        echo "preflight-opportunistic: joined maintenance cgroup $maint_cgroup for egress attribution"
+    elif echo $$ > "/sys/fs/cgroup$cell_cgroup/cgroup.procs" 2>/dev/null; then
+        echo "preflight-opportunistic: joined cell cgroup $cell_cgroup for egress attribution (maintenance leaf unavailable)"
+    else
+        echo "preflight-opportunistic: cell cgroup join failed; apt egress will be unattributed (407)" >&2
+    fi
+else
+    echo "preflight-opportunistic: cell cgroup not resolved; apt egress will be unattributed (407)" >&2
+fi
+
+# --- Yield to serving startup (bounded) ---
+# The resume boot deliberately parallelizes post-attach work: PG start,
+# daemon unpark page-in, prewarm, and THIS script can all overlap right
+# after RV attachment. The apt stages here are the one member of that
+# overlap with a multi-hundred-MB transient footprint and no latency
+# contract, and on 8G guests the combined spike OOM-killed cell processes
+# fleet-wide (S698078). Wait, bounded, for the daemon execution-ready
+# marker so maintenance memory lands after the serving stack settles.
+# Strictly opportunistic: a daemon that never becomes ready must not block
+# the reconcile forever — proceed at the deadline and let the maintenance
+# leaf memory bound contain the overlap.
+ready_marker=/hatch/data/resume/execution-ready.marker
+waited=0
+while [ ! -e "$ready_marker" ] && [ "$waited" -lt 120 ]; do
+    sleep 2
+    waited=$((waited + 2))
+done
+if [ -e "$ready_marker" ]; then
+    [ "$waited" -eq 0 ] || echo "preflight-opportunistic: waited $waited seconds for daemon execution-ready before apt stages"
+else
+    echo "preflight-opportunistic: daemon not execution-ready after $waited seconds; proceeding (bounded yield; maintenance memory stays capped)"
+fi
+
+# --- Failure backoff (host-side state, guest-unwritable) ---
+# A failed pass withholds its receipt/manifest state so the next cell
+# restart retries — right for transients, but a persistently failing VM
+# (degenerate apt, dpkg damage the recovery arm cannot fix) then re-runs
+# full apt work on EVERY deploy/reboot cadence forever, hammering the
+# package mirrors (S698005). After BACKOFF_LIMIT consecutive failed passes
+# with IDENTICAL inputs, skip the apt-bearing stages until the ledger or
+# the manifest actually changes. State lives in a root-only dir that is
+# deliberately NOT the bridged os-intent dir: the guest can neither forge
+# a backoff nor clear one.
+backoff_dir=/var/lib/hatch/os-intent-backoff
+backoff_file="$backoff_dir/strikes"
+BACKOFF_LIMIT=5
+# BEGIN test-extracted: ledger-snapshot (scripts/tests/test_os_intent_replay.py
+# re-executes this block verbatim ahead of the replay function; keep it
+# self-contained: only ledger_source/snapshot vars + the one-open copy).
+# --- One-open ledger snapshot (RT-11) ---
+# The ledger lives in the guest-bridged os-intent dir, so this HOST-root
+# reader must treat it as hostile. The old shape opened it once per consumer
+# (backoff hash here, receipt hash + line parse in the replay): a symlink
+# re-planted between opens turned later reads into arbitrary host-file reads,
+# and a planted FIFO wedged sha256sum's open forever. Snapshot it EXACTLY
+# ONCE — python3 opens O_NOFOLLOW|O_NONBLOCK (symlink -> ELOOP; FIFO ->
+# non-blocking open, never a wedge), fstat-proves a regular file on the OPEN
+# fd (no check-then-reopen), bounds the copy at 16 MiB — into root-only /run
+# state, and every consumer reads the immutable snapshot: hash and parse see
+# the same bytes by construction. python3 rather than GNU dd because the
+# script already leans on python3 for the O_NOFOLLOW converter below, and the
+# fstat-on-the-held-fd check is stronger than dd's flag semantics.
+#
+# The digest sidecar covers EVERY byte the held fd yields (up to a 64 MiB
+# sanity ceiling), not just the 16 MiB the snapshot retains: hashing only the
+# snapshot would freeze change detection once the ledger outgrew the bound —
+# the receipt fast path and the backoff strike compare would keep matching a
+# stale prefix while the journal asserted "unchanged", and entries past the
+# cut would silently never replay. Replay still parses only the snapshot;
+# the truncation is logged loudly below. Past the ceiling the file is not a
+# plausible intent ledger at all (a bounded root read of a hostile file is
+# the point of the bound), so the helper refuses it like a non-regular file.
+# HATCH_PREFLIGHT_SNAPSHOT_DIR is a test-harness override only; production
+# always takes the /run default. Ownership comes from the invoker, which is
+# root on every production path (the unit runs ExecStart=+).
+ledger_source=/var/lib/hatch/os-intent/ledger.jsonl
+ledger_snapshot_dir="${HATCH_PREFLIGHT_SNAPSHOT_DIR:-/run/hatch/preflight}"
+ledger_snapshot="$ledger_snapshot_dir/ledger-snapshot.jsonl"
+install -d -m 0700 "$ledger_snapshot_dir"
+# A function so callers can RE-snapshot after in-pass ledger writers (the
+# cutover conversion appends its converted entry mid-script; replay must
+# fold that entry in the same pass, not next boot).
+snapshot_os_intent_ledger() {
+rm -f "$ledger_snapshot" "$ledger_snapshot.sha256" "$ledger_snapshot.skipped-bytes"
+# Existence pre-check is NOISE control only (quiet fresh-VM boots); the
+# python open owns enforcement, so a race here changes nothing. -e follows
+# symlinks, so a DANGLING guest-planted symlink must also pass the gate via
+# -L and reach the python open — that is what turns the plant into the loud
+# tamper message instead of a silent healthy-looking skip.
+if [ -e "$ledger_source" ] || [ -L "$ledger_source" ]; then
+snap_rc=0
+python3 - "$ledger_source" "$ledger_snapshot" <<'PYSNAP' 2>/dev/null || snap_rc=$?
+import hashlib, os, stat, sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+except OSError:
+    sys.exit(3)
+try:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        sys.exit(4)
+    hasher = hashlib.sha256()
+    retain = 16 * 1024 * 1024
+    ceiling = 64 * 1024 * 1024
+    hashed = 0
+    skipped = 0
+    out = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            hashed += len(chunk)
+            if hashed > ceiling:
+                sys.exit(5)
+            hasher.update(chunk)
+            take = chunk[:retain] if retain > 0 else b""
+            if take:
+                os.write(out, take)
+                retain -= len(take)
+            skipped += len(chunk) - len(take)
+    finally:
+        os.close(out)
+    if skipped:
+        with open(dst + ".skipped-bytes", "w") as sidecar:
+            sidecar.write("%d\n" % skipped)
+    with open(dst + ".sha256", "w") as sidecar:
+        sidecar.write(hasher.hexdigest() + "\n")
+finally:
+    os.close(fd)
+PYSNAP
+if [ "$snap_rc" -ne 0 ]; then
+    # The helper's exit codes split guest tampering from host faults: 3 is a
+    # refused open (symlink -> ELOOP under O_NOFOLLOW), 4 a non-regular file
+    # (FIFO/device), 5 a file past the 64 MiB hash ceiling — not a plausible
+    # intent ledger. Anything else is a host problem (python3 missing,
+    # ENOSPC) and must NOT be logged fleet-wide as guest tampering.
+    case "$snap_rc" in
+        3|4)
+            echo "preflight-opportunistic: os-intent ledger is a symlink/FIFO/non-regular file (guest tamper); refusing replay" >&2
+            ;;
+        5)
+            echo "preflight-opportunistic: os-intent ledger exceeds the 64 MiB hash ceiling (guest tamper or runaway writer); refusing replay" >&2
+            ;;
+        *)
+            echo "preflight-opportunistic: os-intent ledger snapshot failed (host error, exit $snap_rc); treating as absent" >&2
+            ;;
+    esac
+    rm -f "$ledger_snapshot" "$ledger_snapshot.sha256" "$ledger_snapshot.skipped-bytes"
+elif [ -s "$ledger_snapshot.skipped-bytes" ]; then
+    echo "preflight-opportunistic: os-intent ledger exceeds the 16 MiB snapshot bound; $(cat "$ledger_snapshot.skipped-bytes") bytes past the bound are hashed for change detection but EXCLUDED from replay" >&2
+fi
+fi
+}
+snapshot_os_intent_ledger
+# END test-extracted: ledger-snapshot
+# Full-file digest from the snapshot sidecar, NOT sha256sum of the (16 MiB
+# bounded) snapshot: the sidecar keeps moving when installs land past the
+# bound, so backoff strikes and the receipt fast path never pin to a frozen
+# prefix. Root-written by our own helper, so no sanitization needed here.
+ledger_hash_now="$(cat "$ledger_snapshot.sha256" 2>/dev/null || true)"
+manifest_hash_now="$(cat /opt/hatch-image/bin/runtime-cell.kdl /opt/hatch/bin/runtime-cell.kdl 2>/dev/null | sha256sum | cut -d" " -f1)"
+strike_count=0
+strike_ledger=""
+strike_manifest=""
+backoff_engaged=0
+if [ -f "$backoff_file" ]; then
+    read -r strike_count strike_ledger strike_manifest < "$backoff_file" 2>/dev/null || true
+    case "$strike_count" in
+        *[!0-9]*|"") strike_count=0 ;;
+    esac
+    if [ "$strike_ledger" != "$ledger_hash_now" ] || [ "$strike_manifest" != "$manifest_hash_now" ]; then
+        rm -f "$backoff_file" 2>/dev/null || true
+        strike_count=0
+        echo "preflight-opportunistic: backoff cleared (ledger or manifest changed since the failing passes)"
+    elif [ "$strike_count" -ge "$BACKOFF_LIMIT" ]; then
+        backoff_engaged=1
+        echo "preflight-opportunistic: BACKOFF ENGAGED after $strike_count consecutive failed passes with unchanged inputs; skipping apt stages until the ledger or manifest changes" >&2
+    fi
+fi
+
+# Reconcile guest packages via hatch-manifest, run INSIDE the live cell.
+#
+# hatch-manifest maybe-apply compares the manifest fingerprint against a state
+# file: identical -> exits ~1ms; changed -> applies the package delta via apt
+# (through the cell's Sentinel egress).
+#
+# hatch-manifest and runtime-cell.kdl are image-vendored under
+# /opt/hatch-image/bin (the cell binds it read-only; see htch-runtime.nspawn).
+# Older bundle-era layouts shipped them under /opt/hatch/bin, kept here as a
+# fallback. Resolve each from the new home first.
+#
+# Prefer the /opt/hatch-image/manifests dir layout when present (bind it into the
+# cell once that diff lands); otherwise fall back to the single-file
+# runtime-cell.kdl resolved from /opt/hatch-image/bin (or legacy /opt/hatch/bin).
+# The manifests branch is kept so the cutover to the dir layout is a no-op here.
+in_cell_reconcile='
+set -eu
+# Memory containment (see the maintenance-leaf note above: cgroup bounds
+# cannot reach this subtree). RLIMIT_AS, inherited by every child this
+# shell spawns — hatch-manifest, apt, dpkg, their methods. 3GiB of address
+# space never troubles a legitimate reconcile (normal apt peaks a few
+# hundred MB) but kills the degenerate multi-GB runs (observed 6.5G RSS,
+# SEV S698078) with a clean allocation failure — a nonzero exit and a
+# retry, never a guest-wide OOM hunt. Fail-open where unsupported.
+ulimit -v 3145728 2>/dev/null || true
+# Heal an interrupted dpkg BEFORE the reconcile, not only before the replay:
+# the reconcile runs first in every pass, so without this arm a pass that
+# died mid-dpkg would fail its NEXT manifest apply too (one wasted pass and
+# one wasted strike) before the replay-side heal repaired the db. Fast no-op
+# on a clean db; a failure here just lets the apply fail loudly as before.
+nice -n 10 ionice -c3 env DEBIAN_FRONTEND=noninteractive dpkg --configure -a >/dev/null 2>&1 || true
+manifest_bin=
+for cand in /opt/hatch-image/bin/hatch-manifest /opt/hatch/bin/hatch-manifest; do
+    if [ -x "$cand" ]; then
+        manifest_bin="$cand"
+        break
+    fi
+done
+if [ -z "$manifest_bin" ]; then
+    echo "preflight-opportunistic: hatch-manifest missing in cell" >&2
+    exit 1
+fi
+# Deliberately NO lock-file removal here: apt/dpkg fcntl locks die with
+# their process, so a stale lock cannot persist — while unlinking a LIVE
+# lock detaches it from its path and lets a second dpkg start against the
+# same database (status-db corruption). A lock-blocked run below just
+# fails this opportunistic pass and retries on the next cell restart.
+manifest_kdl=
+for cand in /opt/hatch-image/bin/runtime-cell.kdl /opt/hatch/bin/runtime-cell.kdl; do
+    if [ -f "$cand" ]; then
+        manifest_kdl="$cand"
+        break
+    fi
+done
+if [ -d /opt/hatch-image/manifests ]; then
+    echo "preflight-opportunistic: reconciling packages via hatch-manifest (manifests dir)"
+    exec "$manifest_bin" maybe-apply --scope runtime-cell
+elif [ -n "$manifest_kdl" ]; then
+    echo "preflight-opportunistic: reconciling packages via hatch-manifest (legacy kdl)"
+    exec "$manifest_bin" maybe-apply \
+        --scope runtime-cell \
+        --manifest "$manifest_kdl"
+else
+    echo "preflight-opportunistic: no runtime-cell manifest found (/opt/hatch-image/manifests dir or runtime-cell.kdl)" >&2
+    exit 1
+fi
+'
+
+# --- Recorder snapshot reset (MUST precede the reconcile) ---
+# The reconcile below can run apt/dpkg, and its DPkg::Post-Invoke recorder
+# fires against whatever dpkg-state.txt says. After a rootfs rebuild that
+# snapshot still describes the RETIRED rootfs (converter-seeded or carried
+# on the RV), so a reconcile-driven dpkg run would durably append every
+# not-yet-reinstalled bespoke package as "removed" — the fold then treats
+# them as net-removes and the replay never restores them: permanent silent
+# package loss on exactly the fleet-correlated digest-change boots. Reset
+# the snapshot to THIS rootfs's reality first (same format/sort as
+# hatch-apt-intent-record; atomic tmp+mv; strictly best-effort). Guarded on
+# an existing snapshot: with none, the recorder's own baseline seeding is
+# already correct.
+in_cell_snapshot_reset='
+# Same RLIMIT_AS as the reconcile payload; this string is also prepended
+# to the replay payload, so one limit covers the reset AND every replay
+# apt/dpkg invocation in the concatenated run. Fail-open.
+ulimit -v 3145728 2>/dev/null || true
+if [ -f /var/lib/hatch/os-intent/dpkg-state.txt ]; then
+    snap_d='\''$'\''
+    if dpkg-query -W -f "$snap_d{Package} $snap_d{Version} $snap_d{Status}\n" 2>/dev/null \
+        | LC_ALL=C sort > /var/lib/hatch/os-intent/.dpkg-state.replay-reset 2>/dev/null \
+        && [ -s /var/lib/hatch/os-intent/.dpkg-state.replay-reset ]; then
+        mv -f /var/lib/hatch/os-intent/.dpkg-state.replay-reset /var/lib/hatch/os-intent/dpkg-state.txt
+    else
+        rm -f /var/lib/hatch/os-intent/.dpkg-state.replay-reset
+    fi
+fi
+'
+set +e
+# --user is the LOAD-BEARING privilege drop on this reach-in: nsenter execvp()s
+# the command AFTER setns, resolving sh/dpkg/apt-get out of the CELL rootfs — a
+# tree cell root owns and can rewrite. Joining the cell user namespace first is
+# what makes that execution cell-root instead of host-root. Never remove
+# --user or add --preserve-credentials here; doing so is instant host-root
+# execution of a cell-owned binary.
+/usr/bin/nsenter \
+    --target "$leader" \
+    --user \
+    --mount \
+    --uts \
+    --ipc \
+    --net \
+    --pid \
+    -- sh -c "$in_cell_snapshot_reset" \
+    || echo "preflight-opportunistic: recorder snapshot reset failed (best-effort; continuing)" >&2
+set -e
+
+rc=0
+if [ "$backoff_engaged" -eq 0 ]; then
+    set +e
+    /usr/bin/nsenter \
+        --target "$leader" \
+        --user \
+        --mount \
+        --uts \
+        --ipc \
+        --net \
+        --pid \
+        -- sh -c "$in_cell_reconcile"
+    rc=$?
+    set -e
+else
+    echo "preflight-opportunistic: package reconcile skipped (backoff engaged)"
+fi
+
+if [ "$rc" -eq 0 ]; then
+    echo "preflight-opportunistic: package reconcile complete"
+else
+    # Loud but NON-FAILING: this unit is opportunistic by contract (nothing
+    # Requires= it, and it re-runs on the next cell restart via PartOf=), so
+    # a reconcile failure must not fail the unit — a failed oneshot flips
+    # `systemctl is-system-running` to degraded for the rest of the boot,
+    # and the control plane's replace health gate requires exactly
+    # "running", so one transient apt/egress hiccup at candidate boot (e.g.
+    # a 407 from the cell egress proxy) would otherwise permanently fail
+    # that VM's replacement health checks. Visibility stays in the journal
+    # line below, same posture as the ledger replay half.
+    echo "preflight-opportunistic: package reconcile failed (exit $rc); see output above (unit stays successful: opportunistic contract, retried at next cell restart)" >&2
+fi
+
+# --- Per-VM package-intent ledger replay ---
+# The cell boots from the image-local, digest-keyed base every boot, so
+# user/agent-installed OS packages do not persist in the rootfs. The
+# hatch-image cell base records every apt/dpkg transition OS-level via a
+# DPkg::Post-Invoke hook (hatch-apt-intent-record: dpkg-state snapshot diff)
+# that appends
+#   {"v":1,"ts":N,"event":"dpkg-post-invoke","added":[...],"removed":[...]}
+# JSONL entries — plus one {"baseline":true} seed line — to
+# /var/lib/hatch/os-intent/ledger.jsonl, read here from the HOST path, which
+# post-mount is the RV-backed ledger. Entries are folded IN ORDER, last
+# action per package wins, into a net install set and a net remove set: a
+# package installed and later removed is not resurrected, and a removal
+# later reverted is not replayed. Removals replay BEFORE installs so a later
+# install that depends on an earlier removal's package pulls it back as a
+# dependency, matching the user's real end state. The legacy
+# {"op":"apt-install","pkgs":[...]} shape and the cutover converter's
+# {"event":"converted","pkgs":[...]} entries (see the conversion block at
+# the call site below) are also accepted; both fold as installs.
+#
+# A receipt (sha256 of the ledger) written INSIDE the cell rootfs after a
+# fully successful pass skips the whole replay while nothing changed; a
+# digest-change rebuild or ReplaceVM wipes the rootfs and the receipt with
+# it — exactly the moments a full replay is needed again.
+#
+# STRICTLY best-effort: each malformed or failing ledger line is logged and
+# skipped, per-package failures never fail the unit, and a failed pass just
+# withholds the receipt so the next cell restart retries. Fleet-typical VMs
+# have an empty or absent ledger, so the common case is a no-op.
+replay_os_intent_ledger() {
+    # RT-11: every read below uses the ONE-OPEN snapshot re-taken immediately
+    # before this call (O_NOFOLLOW|O_NONBLOCK python copy into root-only
+    # /run), so the hash, the receipt, and the parsed lines are the same
+    # bytes and no re-open can be redirected or FIFO-wedged by the guest.
+    ledger="$ledger_snapshot"
+    if [ ! -s "$ledger" ]; then
+        echo "preflight-opportunistic: no os-intent ledger snapshot; skipping replay"
+        return 0
+    fi
+
+    # Receipt fast path. The receipt lives in (and is read from) the cell
+    # rootfs via nsenter — cell-controlled content — so it is sanitized to
+    # hex and used only for an equality check: at worst a forged receipt
+    # skips or repeats an idempotent pass on behalf of a principal (in-cell
+    # root) that can already run apt directly.
+    # Same full-file digest the backoff compare uses (see ledger_hash_now):
+    # the receipt must move when installs land past the 16 MiB snapshot
+    # bound, or a grown ledger would match its own stale receipt forever.
+    ledger_hash="$(cat "$ledger.sha256" 2>/dev/null | tr -d '\n')"
+    case "$ledger_hash" in
+        *[!a-f0-9]*) ledger_hash="" ;;
+    esac
+    [ "${#ledger_hash}" -eq 64 ] || ledger_hash=""
+    if [ -n "$ledger_hash" ]; then
+        prior_hash="$(/usr/bin/nsenter \
+            --target "$leader" \
+            --user \
+            --mount \
+            --uts \
+            --ipc \
+            --net \
+            --pid \
+            -- sh -c 'cat /var/lib/hatch-preflight/os-intent-replayed.sha256 2>/dev/null' \
+            2>/dev/null | tr -cd 'a-f0-9' | cut -c1-64)"
+        if [ "$prior_hash" = "$ledger_hash" ]; then
+            echo "preflight-opportunistic: os-intent ledger unchanged since last successful replay; skipping"
+            return 0
+        fi
+    fi
+
+    # Package tokens are strictly validated ([a-z0-9.+:~-], leading
+    # alphanumeric) because the ledger is agent-writable and the names are
+    # passed to apt-get inside the cell: anything else is logged and
+    # dropped. Prints one validated token per line from the named JSON
+    # string array ($2) of ledger line $1; $3 is the line number for logs.
+    extract_pkg_tokens() {
+        _ept_csv="$(printf '%s\n' "$1" \
+            | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')"
+        [ -n "$_ept_csv" ] || return 0
+        # set -f: the unquoted word-split below GLOBS before validation — a
+        # ledger token like `*` would expand to cwd filenames, and a
+        # lowercase filename could then pass the token validation.
+        set -f
+        for _ept_raw in $(printf '%s\n' "$_ept_csv" | tr ',' '\n'); do
+            _ept_pkg="$(printf '%s\n' "$_ept_raw" | tr -d '"[:space:]')"
+            [ -n "$_ept_pkg" ] || continue
+            case "$_ept_pkg" in
+                [a-z0-9]*) ;;
+                *)
+                    echo "preflight-opportunistic: os-intent ledger line $3: rejecting invalid package token '$_ept_pkg'" >&2
+                    continue
+                    ;;
+            esac
+            case "$_ept_pkg" in
+                *[!a-z0-9.+:~-]*)
+                    echo "preflight-opportunistic: os-intent ledger line $3: rejecting invalid package token '$_ept_pkg'" >&2
+                    continue
+                    ;;
+            esac
+            printf '%s\n' "$_ept_pkg"
+        done
+        set +f
+        return 0
+    }
+
+    # Drop token $2 from space-separated list $1 (prints the new list).
+    drop_token() {
+        _dt_out=""
+        for _dt_p in $1; do
+            [ "$_dt_p" = "$2" ] || _dt_out="$_dt_out $_dt_p"
+        done
+        printf '%s\n' "$_dt_out"
+    }
+
+    net_install=""
+    net_remove=""
+    line_no=0
+    while IFS= read -r ledger_line || [ -n "$ledger_line" ]; do
+        line_no=$((line_no + 1))
+        case "$ledger_line" in
+            '') continue ;;
+        esac
+        case "$ledger_line" in
+            *'"baseline":true'*)
+                # Snapshot seed marker; carries no package delta.
+                continue
+                ;;
+        esac
+        added_tokens=""
+        removed_tokens=""
+        case "$ledger_line" in
+            *'"event"'*'dpkg-post-invoke'*)
+                added_tokens="$(extract_pkg_tokens "$ledger_line" added "$line_no")"
+                removed_tokens="$(extract_pkg_tokens "$ledger_line" removed "$line_no")"
+                # An empty name delta (e.g. a version-only upgrade) is a
+                # legitimate hook append; skip quietly.
+                [ -n "$added_tokens" ] || [ -n "$removed_tokens" ] || continue
+                ;;
+            *'"event"'*'"converted"'*)
+                # Cutover conversion entry (convert-cell-intent, invoked at
+                # the call site below): the installed non-base packages of
+                # the retired pre-cutover serving rootfs. Folds as installs.
+                # An empty pkgs array (no bespoke packages) is legitimate.
+                added_tokens="$(extract_pkg_tokens "$ledger_line" pkgs "$line_no")"
+                [ -n "$added_tokens" ] || continue
+                ;;
+            *'"op"'*'apt-install'*)
+                added_tokens="$(extract_pkg_tokens "$ledger_line" pkgs "$line_no")"
+                if [ -z "$added_tokens" ]; then
+                    echo "preflight-opportunistic: os-intent ledger line $line_no: apt-install entry without valid packages; skipping" >&2
+                    continue
+                fi
+                ;;
+            *)
+                echo "preflight-opportunistic: os-intent ledger line $line_no: unsupported or malformed op; skipping" >&2
+                continue
+                ;;
+        esac
+        for pkg in $added_tokens; do
+            net_remove="$(drop_token "$net_remove" "$pkg")"
+            case " $net_install " in
+                *" $pkg "*) ;;
+                *) net_install="$net_install $pkg" ;;
+            esac
+        done
+        for pkg in $removed_tokens; do
+            net_install="$(drop_token "$net_install" "$pkg")"
+            case " $net_remove " in
+                *" $pkg "*) ;;
+                *) net_remove="$net_remove $pkg" ;;
+            esac
+        done
+    done < "$ledger"
+
+    net_install="$(echo $net_install)"
+    net_remove="$(echo $net_remove)"
+    if [ -z "$net_install" ] && [ -z "$net_remove" ]; then
+        echo "preflight-opportunistic: os-intent ledger contains no replayable package deltas"
+        return 0
+    fi
+    [ -z "$net_remove" ] || echo "preflight-opportunistic: replaying os-intent removals: $net_remove"
+    [ -z "$net_install" ] || echo "preflight-opportunistic: replaying os-intent installs: $net_install"
+
+    # One nsenter, "verb pkg" lines on stdin (never on a shell-interpolated
+    # command line), removals first. dpkg-query Status-Status makes the
+    # replay idempotent — unlike `dpkg -s` it distinguishes a
+    # removed-but-config-files package from an installed one, so a
+    # remove/reinstall cycle replays correctly. Per-package failures are
+    # logged, counted, and never fail the unit; a non-zero exit only
+    # withholds the receipt so the next cell restart retries. The trailing
+    # autoclean prunes no-longer-downloadable .debs from the RV-backed
+    # archive cache (/var/cache/apt/archives, see htch-runtime.nspawn) so
+    # the persistent cache never grows unboundedly.
+    # The snapshot reset runs TWICE by design: once before the manifest
+    # reconcile (its apt run fires the recorder), and again here, prepended
+    # to the replay payload — on the FIRST cutover boot the pre-reconcile
+    # reset no-ops (no snapshot exists yet), the conversion then seeds the
+    # snapshot from the RETIRED rootfs, and an unreset replay would log
+    # every not-yet-reinstalled package as removed; a single failed install
+    # would then fold as a PERMANENT net-remove. The reset is idempotent
+    # and cheap (one dpkg-query), so the double run costs nothing.
+    in_cell_replay='
+index_refreshed=0
+failures=0
+# Recover an interrupted dpkg FIRST: with the unit detached from the boot
+# health gate (Type=exec), a reboot, deploy, or cell stop can land while
+# a replay apt run is mid-transaction, and an unrecovered dpkg db fails
+# every apt call below — the replay would fail forever (receipt withheld
+# each pass) until a human ran this same command. On a clean db this is
+# a fast no-op. A failure counts like any other (receipt withheld, next
+# restart retries) and the pass continues: removals against a
+# still-wedged db just fail and count individually.
+if ! nice -n 10 ionice -c3 env DEBIAN_FRONTEND=noninteractive dpkg --configure -a; then
+    failures=$((failures + 1))
+    echo "preflight-opportunistic: os-intent replay: dpkg --configure -a FAILED (best-effort; continuing)" >&2
+fi
+while read -r verb pkg; do
+    [ -n "$pkg" ] || continue
+    status="$(dpkg-query -W -f '\''${db:Status-Status}'\'' "$pkg" 2>/dev/null)" || status=""
+    case "$verb" in
+        remove)
+            if [ "$status" != "installed" ]; then
+                echo "preflight-opportunistic: os-intent replay: $pkg already absent"
+                continue
+            fi
+            if nice -n 10 ionice -c3 env DEBIAN_FRONTEND=noninteractive apt-get remove -y "$pkg"; then
+                echo "preflight-opportunistic: os-intent replay: removed $pkg"
+            else
+                failures=$((failures + 1))
+                echo "preflight-opportunistic: os-intent replay: FAILED to remove $pkg (best-effort; continuing)" >&2
+            fi
+            ;;
+        install)
+            if [ "$status" = "installed" ]; then
+                echo "preflight-opportunistic: os-intent replay: $pkg already installed"
+                continue
+            fi
+            # Cache-first: the RV-backed /var/cache/apt/archives survives
+            # reboots, rootfs rebuilds, and image rolls, so a version the
+            # cell installed before is usually already on local disk.
+            # --no-download resolves and unpacks purely from cache when the
+            # lists can still resolve the name; on any miss this falls
+            # through to the index+fetch path below. Keeps same-generation
+            # retries entirely off the network.
+            if nice -n 10 ionice -c3 env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-download --no-install-recommends "$pkg" >/dev/null 2>&1; then
+                echo "preflight-opportunistic: os-intent replay: installed $pkg from local archive cache"
+                continue
+            fi
+            # Lazy index refresh, once per pass, only when an install will
+            # actually run: a rebuilt cell rootfs ships no Ubuntu package
+            # index (the base carries only the cli.github.com and
+            # pkg.cloudflare.com lists) and nothing else populates one —
+            # the cell never reaches timers.target, and hatch-manifest only
+            # updates when the manifest itself has packages to install. apt
+            # cannot resolve a name without an index, so without this every
+            # replay install fails "E: Unable to locate" while removals
+            # (local dpkg db only) keep succeeding — the replay could only
+            # subtract. ensure-rootfs.sh has already written ubuntu.sources
+            # into the rootfs by the time the cell is up. A failed update
+            # counts as a failure (receipt withheld, next restart retries)
+            # but the pass continues: a same-rootfs reboot may still hold
+            # lists from an earlier successful pass, and removals never
+            # need the index. Pure-removal and receipt-verify passes never
+            # reach this line, so they stay off the network.
+            if [ "$index_refreshed" -eq 0 ]; then
+                index_refreshed=1
+                # Purge index-fetch DEBRIS before updating: a failed update
+                # leaves partial list files behind, and on the persistent
+                # overlay upper they accumulate across retry passes — each
+                # later update then parses the whole growing pile (observed
+                # multi-GB apt RSS on long-retrying VMs). Only the partial
+                # dir: valid lists stay, so this never forces extra fetches.
+                rm -rf /var/lib/apt/lists/partial 2>/dev/null || true
+                # nice/ionice on every replay apt run: on rollout boots
+                # the replay contends inside the delegated cell cgroup while
+                # the daemon races to execution-ready.
+                if ! nice -n 10 ionice -c3 env DEBIAN_FRONTEND=noninteractive apt-get update; then
+                    failures=$((failures + 1))
+                    echo "preflight-opportunistic: os-intent replay: apt-get update FAILED (best-effort; installs may not resolve)" >&2
+                fi
+            fi
+            if nice -n 10 ionice -c3 env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$pkg"; then
+                echo "preflight-opportunistic: os-intent replay: installed $pkg"
+            else
+                failures=$((failures + 1))
+                echo "preflight-opportunistic: os-intent replay: FAILED to install $pkg (best-effort; continuing)" >&2
+            fi
+            ;;
+    esac
+done
+DEBIAN_FRONTEND=noninteractive apt-get autoclean -y >/dev/null 2>&1 || true
+[ "$failures" -eq 0 ] || exit 1
+exit 0
+'
+    {
+        for pkg in $net_remove; do printf 'remove %s\n' "$pkg"; done
+        for pkg in $net_install; do printf 'install %s\n' "$pkg"; done
+    } | /usr/bin/nsenter \
+        --target "$leader" \
+        --user \
+        --mount \
+        --uts \
+        --ipc \
+        --net \
+        --pid \
+        -- sh -c "$in_cell_snapshot_reset$in_cell_replay"
+    replay_rc=$?
+
+    if [ "$replay_rc" -ne 0 ]; then
+        echo "preflight-opportunistic: os-intent replay pass had failures (best-effort; receipt withheld so the next cell restart retries)" >&2
+        return 1
+    fi
+    echo "preflight-opportunistic: os-intent replay pass complete"
+    if [ -n "$ledger_hash" ]; then
+        /usr/bin/nsenter \
+            --target "$leader" \
+            --user \
+            --mount \
+            --uts \
+            --ipc \
+            --net \
+            --pid \
+            -- sh -c "install -d -m 0755 /var/lib/hatch-preflight && printf '%s\n' $ledger_hash > /var/lib/hatch-preflight/os-intent-replayed.sha256" \
+            || echo "preflight-opportunistic: failed to write replay receipt (best-effort; next boot re-runs the idempotent pass)" >&2
+    fi
+    return 0
+}
+
+# --- One-time cutover conversion: old serving rootfs -> os-intent ledger ---
+# RVs predating the image-local-rootfs cutover carry user-installed packages
+# only in the retired serving-tree rootfs (kept untouched on the RV for
+# rollback/forensics; see ensure-rootfs.sh). convert-cell-intent
+# (image-vendored) appends one {"event":"converted","pkgs":[...]} ledger
+# entry for every installed non-base package and seeds dpkg-state.txt from
+# the retired tree; the replay below then folds those as installs. Done-
+# marker idempotent, so this per-boot invocation converts exactly once per
+# RV. The replay RE-SNAPSHOTS the ledger after this conversion runs, so the
+# converted entry is folded in the same pass; only post-mount (this
+# unit is After=hatch-rv.target). Host-side read of a guest-written tree:
+# refuse guest-planted symlinks on the dpkg-status path components, same
+# posture as ensure-rootfs.sh's /usr/local seed. Strictly best-effort: any
+# skip or failure is loud, never fails the unit, and retries next restart.
+# Run the image converter against a ROOT-OWNED staging dir the cell cannot
+# reach (parent /var/lib/hatch is root-owned and not bridged wholesale),
+# then land the results on the real, guest-writable os-intent dir through
+# O_NOFOLLOW|O_NONBLOCK fds with regular-file checks. The previous shell
+# `-L` test was TOCTOU-racy: the guest could re-plant a symlink between the
+# check and the converter's path-based host-root open("a"), steering a root
+# append onto an arbitrary host file.
+convert_via_staging() {
+    staging="/var/lib/hatch/.os-intent-convert.$$"
+    rm -rf "$staging"
+    mkdir -m 0700 "$staging" || return 1
+    if ! python3 "$cutover_converter" convert \
+        --old-rootfs "$retired_rootfs" \
+        --base-manifest "$cell_base_manifest" \
+        --out "$staging"; then
+        rm -rf "$staging"
+        return 1
+    fi
+    python3 - "$staging" <<'PYEOF'
+import os, stat, sys
+staging = sys.argv[1]
+dst = "/var/lib/hatch/os-intent"
+def safe_fd(path, flags, mode=0o640):
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise SystemExit(f"refusing {path}: not a regular file")
+    return fd
+led = os.path.join(staging, "ledger.jsonl")
+if os.path.exists(led) and os.path.getsize(led) > 0:
+    payload = open(led, "rb").read()
+    fd = safe_fd(os.path.join(dst, "ledger.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    os.write(fd, payload)
+    os.close(fd)
+snap = os.path.join(staging, "dpkg-state.txt")
+if os.path.exists(snap) and not os.path.exists(os.path.join(dst, "dpkg-state.txt")):
+    payload = open(snap, "rb").read()
+    tmp = os.path.join(dst, ".dpkg-state.convert")
+    fd = safe_fd(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    os.write(fd, payload)
+    os.close(fd)
+    os.rename(tmp, os.path.join(dst, "dpkg-state.txt"))
+done = os.path.join(staging, "converted.done")
+if os.path.exists(done):
+    payload = open(done, "rb").read()
+    tmp = os.path.join(dst, ".converted.done.tmp")
+    fd = safe_fd(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    os.write(fd, payload)
+    os.close(fd)
+    os.rename(tmp, os.path.join(dst, "converted.done"))
+PYEOF
+    rc=$?
+    rm -rf "$staging"
+    return $rc
+}
+
+retired_rootfs="/hatch/runtime-cell/rootfs"
+cutover_converter="/opt/hatch-image/bin/convert-cell-intent"
+cell_base_manifest="/opt/hatch-image/cell-base.packages.txt"
+if [ -e /var/lib/hatch/os-intent/converted.done ]; then
+    # Converted on an earlier boot (the marker is also re-checked inside the
+    # converter). Skipping here saves a per-boot python3 exec on every
+    # cutover-era RV forever, and keeps the staging pass idempotent: a
+    # guest-deleted marker at worst re-appends a duplicate converted entry,
+    # which the fold treats as a no-op.
+    :
+elif [ -f "$retired_rootfs/var/lib/dpkg/status" ]; then
+    # A retired serving tree exists, so this VM's pre-cutover packages need
+    # conversion. Every skip below is LOUD: the silent no-op journal on a
+    # missing converter reads exactly like a VM that never installed a
+    # package, hiding unrestored user packages behind an image-side artifact
+    # regression the install assert does not cover.
+    if [ ! -f "$cutover_converter" ]; then
+        echo "preflight-opportunistic: retired rootfs present but cutover converter missing at $cutover_converter; skipping cutover conversion (per-VM packages stay unrestored; retried at next cell restart)" >&2
+    elif [ -L "$retired_rootfs/var" ] || [ -L "$retired_rootfs/var/lib" ] \
+        || [ -L "$retired_rootfs/var/lib/dpkg" ] \
+        || [ -L "$retired_rootfs/var/lib/dpkg/status" ]; then
+        echo "preflight-opportunistic: REFUSING cutover conversion: retired rootfs plants a symlink on the dpkg status path" >&2
+    elif ! command -v python3 >/dev/null 2>&1; then
+        echo "preflight-opportunistic: python3 unavailable on host; skipping cutover conversion" >&2
+    elif [ ! -f "$cell_base_manifest" ]; then
+        echo "preflight-opportunistic: cell base manifest missing at $cell_base_manifest; skipping cutover conversion" >&2
+    elif convert_via_staging; then
+        echo "preflight-opportunistic: cutover conversion pass complete (no-op after first success)"
+        # Ownership heal: the converter runs as host root, but the ledger's
+        # appender is the in-cell recorder (guest root = hatch-daemon on the
+        # host; host uid 0 is unmapped in the cell, so a root-owned ledger is
+        # un-appendable in-cell and installs silently stop being recorded).
+        # rv-graft pre-creates ledger.jsonl recorder-owned before we run;
+        # this heals any file a host-root writer created anyway (earlier
+        # build, manual run). -h: the dir is cell-writable, never follow a
+        # guest-planted symlink.
+        chown -h hatch-daemon:hatch-shared \
+            /var/lib/hatch/os-intent/ledger.jsonl \
+            /var/lib/hatch/os-intent/dpkg-state.txt 2>/dev/null || true
+    else
+        echo "preflight-opportunistic: cutover conversion failed (best-effort; retried at next cell restart)" >&2
+    fi
+fi
+
+replay_rc=0
+if [ "$backoff_engaged" -eq 0 ]; then
+    set +e
+    # Re-snapshot AFTER the cutover conversion above: the conversion appends
+    # its converted-package entry to the LIVE ledger, and the replay reads
+    # only the snapshot — a start-of-script copy would skip the user's
+    # pre-migration packages on exactly the migration boot (and the early
+    # return would also skip the dpkg-state reset, letting the next fold
+    # mark every bespoke package removed: permanent loss).
+    snapshot_os_intent_ledger
+    replay_os_intent_ledger
+    replay_rc=$?
+    set -e
+else
+    echo "preflight-opportunistic: os-intent replay skipped (backoff engaged)"
+fi
+
+# Strike accounting: a fully clean pass clears the counter; any failed
+# stage records one strike against the exact inputs that failed. The file
+# format is one line: "<count> <ledger-sha256> <manifest-sha256>".
+if [ "$backoff_engaged" -eq 0 ]; then
+    if [ "$rc" -eq 0 ] && [ "$replay_rc" -eq 0 ]; then
+        rm -f "$backoff_file" 2>/dev/null || true
+    else
+        install -d -m 0700 -o root -g root "$backoff_dir" 2>/dev/null || true
+        strike_count=$((strike_count + 1))
+        printf "%s %s %s\n" "$strike_count" "$ledger_hash_now" "$manifest_hash_now" > "$backoff_file" 2>/dev/null \
+            || echo "preflight-opportunistic: strike record write failed (best-effort)" >&2
+        echo "preflight-opportunistic: pass had failures (reconcile rc=$rc, replay rc=$replay_rc); strike $strike_count of $BACKOFF_LIMIT recorded"
+    fi
+fi
+
+# Always exit 0 (opportunistic contract, see header): the reconcile outcome
+# was already logged loudly above, and a failed oneshot would degrade
+# is-system-running for the whole boot. The ledger replay is best-effort by
+# contract and never contributes either.
+exit 0

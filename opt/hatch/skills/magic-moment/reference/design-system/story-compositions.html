@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Muse story compositions</title>
+<style>
+@font-face{font-family:'Optimistic AI';src:url('../../assets/fonts/OptimisticAIVF_A_DrkmOpszWghtItal.ttf');font-weight:100 900}
+body{margin:0;padding:48px;background:#F3F4F5;font-family:'Optimistic AI',sans-serif;color:#111112}
+section{margin-bottom:60px}h2{font-size:32px;font-weight:500}.card{width:1240px;box-sizing:border-box;border-radius:64px;padding:64px;background:white}
+</style></head><body>
+<h1>Story compositions</h1><p>Sample diagrams. Replace their labels and values from the source. Copy a card and its local style; use a bare 1240px body for capture.</p>
+<section><h2>Recurring rhythm · undated plan</h2>
+<div class="card" style="width:1240px;box-sizing:border-box;border-radius:64px;padding:64px;background:white;font-family:'Optimistic AI';color:#111112">
+  <div style="font-size:64px;font-weight:600;line-height:1.1">Make room for a routine</div>
+  <div style="font-size:36px;color:rgba(0,4,9,.59);margin-top:16px">A recurring plan</div>
+  <div style="display:flex;align-items:center;gap:28px;margin-top:48px">
+    <div style="flex:1;border-radius:32px;background:rgba(0,100,212,.08);padding:32px;color:#0064D4;animation:slotReveal 1s ease-out 1 forwards"><div style="font-size:52px;font-weight:600">First session</div><div style="font-size:34px;margin-top:12px">Planned</div></div>
+    <div style="width:100px;height:4px;background:rgba(0,0,0,.1)"></div>
+    <div style="flex:1;border-radius:32px;background:rgba(0,100,212,.08);padding:32px;color:#0064D4;animation:slotReveal 1s ease-out .4s 1 both"><div style="font-size:52px;font-weight:600">Next session</div><div style="font-size:34px;margin-top:12px">Planned</div></div>
+  </div>
+</div><style>@keyframes slotReveal{from{opacity:.3;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}</style>
+</section>
+<section><h2>Route · abstract path, no geographic claim</h2>
+<div style="width:1240px;box-sizing:border-box;border-radius:64px;padding:64px;background:white;font-family:'Optimistic AI';color:#111112">
+  <div style="font-size:64px;font-weight:600">An easy route</div>
+  <div style="display:flex;gap:48px;align-items:center;margin-top:32px">
+    <svg width="650" height="260" viewBox="0 0 650 260" aria-label="Abstract route diagram">
+      <path d="M30 210 C120 210 85 55 220 55 S350 210 445 130 S555 30 610 50" fill="none" stroke="#F3F4F5" stroke-width="22" stroke-linecap="round"/>
+      <path d="M30 210 C120 210 85 55 220 55 S350 210 445 130 S555 30 610 50" pathLength="1" fill="none" stroke="#0064D4" stroke-width="14" stroke-linecap="round" style="stroke-dasharray:1;animation:routeDraw 2s ease-out 1 forwards"/>
+      <circle cx="30" cy="210" r="15" fill="#0064D4"/><circle cx="610" cy="50" r="15" fill="white" stroke="#0064D4" stroke-width="8"/>
+    </svg>
+    <div style="flex:1"><div style="font-size:56px;font-weight:600">Conversational</div><div style="font-size:36px;line-height:1.3;color:rgba(0,4,9,.59);margin-top:16px">Keep the effort comfortable</div></div>
+  </div>
+</div><style>@keyframes routeDraw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}</style>
+</section>
+<section><h2>Connection · mechanism, no invented success state</h2>
+<div style="width:1240px;box-sizing:border-box;border-radius:64px;padding:64px;background:#111112;font-family:'Optimistic AI';color:white">
+  <div style="font-size:64px;font-weight:600">Built to work together</div>
+  <div style="display:flex;gap:40px;align-items:center;margin-top:64px;margin-bottom:20px">
+    <div style="font-size:52px;font-weight:500">Source</div>
+    <div style="height:6px;background:rgba(255,255,255,.18);flex:1;overflow:hidden"><div style="height:6px;background:#CBE5FF;transform-origin:left;animation:connectionReveal 1.5s ease-out 1 forwards"></div></div>
+    <div style="font-size:52px;font-weight:500">Destination</div>
+  </div>
+  <div style="font-size:36px;color:rgba(255,255,255,.65);margin-top:40px">Custom skill</div>
+</div><style>@keyframes connectionReveal{from{transform:scaleX(0)}to{transform:scaleX(1)}}</style>
+</section></body></html>

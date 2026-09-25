@@ -1,0 +1,15 @@
+#!/bin/sh
+# Installed by par-msl/hatch-image over the shadow-utils / adduser
+# account-management tools in the MAIN rootfs.
+#
+# This image is immutable (dm-verity) and its users/groups are provisioned at
+# BUILD TIME by image-setup/setup-service-accounts.py. Runtime user/group
+# management is intentionally disabled here. The real binary is preserved
+# alongside as <tool>.disabled for break-glass use.
+#
+# Every disabled tool symlinks to this script; "$0" names the one invoked.
+cmd=${0##*/}
+printf '%s: disabled on hatch-image.\n' "$cmd" >&2
+printf 'This image is immutable; users and groups are provisioned at build time.\n' >&2
+printf 'Manage them in par-msl/hatch-image (image-setup/setup-service-accounts.py), not at runtime.\n' >&2
+exit 1

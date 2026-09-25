@@ -1,0 +1,4 @@
+#!/bin/sh
+# The package-owned executable is diverted by mkosi.postinst so future package
+# reinstalls cannot restore the Percona telemetry agent at its stable path.
+exit 0
