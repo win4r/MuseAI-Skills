@@ -1,3 +1,5 @@
+[Bilibili profile](https://space.bilibili.com/3493277319825652)
+
 # MuseAI-Skills
 
 Skill documentation and a Muse / Hatch runtime snapshot associated with [muse.ai (Muse AI)](https://muse.ai).
