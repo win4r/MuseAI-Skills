@@ -1,4 +1,4 @@
-# [🚀Bilibili profile](https://space.bilibili.com/3493277319825652)
+# [🚀Watch my videos on Bilibili](https://space.bilibili.com/3493277319825652)
 
 # MuseAI-Skills
 
